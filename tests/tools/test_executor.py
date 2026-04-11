@@ -8,6 +8,7 @@ from neoagent.tools.permission import PermissionChecker
 from neoagent.tools.base import BaseTool
 from neoagent.core.types import ToolCall, ToolResult
 from neoagent.events import EventBus, ToolCallEvent, ToolResultEvent
+from neoagent.hooks import HookManager, HookResult, PreToolCallEvent, PostToolCallEvent
 
 
 class EchoInput(BaseModel):
@@ -224,3 +225,158 @@ async def test_tool_call_event_input_data_is_not_same_object():
 
     assert len(event_input_ids) == 1
     assert event_input_ids[0] != id(call_input)
+
+
+# ── Hook integration: pre_tool_call ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_pre_tool_call_deny_blocks_execution():
+    """pre_tool_call hook returning deny must prevent tool execution."""
+    r = ToolRegistry()
+    r.register(EchoTool())
+    hook_mgr = HookManager()
+
+    async def block_all(event: PreToolCallEvent) -> HookResult:
+        return HookResult.deny("test block")
+
+    hook_mgr.register("pre_tool_call", block_all)
+
+    ex = ToolExecutor(
+        registry=r,
+        permission_checker=PermissionChecker(auto_approve=True),
+        hook_manager=hook_mgr,
+    )
+    results = await ex.execute([ToolCall(id="h1", name="echo", input={"text": "hello"})])
+    assert results[0].is_error
+    assert "test block" in results[0].output
+
+
+@pytest.mark.asyncio
+async def test_pre_tool_call_deny_does_not_call_execute():
+    """When pre hook denies, tool.execute() must never be called."""
+    r = ToolRegistry()
+    execute_called = []
+
+    class TrackingEcho(BaseTool):
+        name: str = "track_echo"
+        description: str = "tracks execute calls"
+        input_model: type[BaseModel] = EchoInput
+        permission: str = "auto"
+        is_concurrent_safe: bool = True
+
+        async def execute(self, input: BaseModel) -> ToolResult:
+            execute_called.append(True)
+            return ToolResult(call_id="", output=input.text)
+
+    r.register(TrackingEcho())
+    hook_mgr = HookManager()
+
+    async def denier(event):
+        return HookResult.deny("blocked")
+
+    hook_mgr.register("pre_tool_call", denier)
+    ex = ToolExecutor(registry=r, permission_checker=PermissionChecker(auto_approve=True), hook_manager=hook_mgr)
+    await ex.execute([ToolCall(id="h2", name="track_echo", input={"text": "x"})])
+    assert execute_called == []
+
+
+@pytest.mark.asyncio
+async def test_pre_tool_call_modify_changes_input():
+    """pre_tool_call modify must replace the tool input before execution."""
+    r = ToolRegistry()
+    r.register(EchoTool())
+    hook_mgr = HookManager()
+
+    async def replace_input(event: PreToolCallEvent) -> HookResult:
+        return HookResult.modify({"tool_input": {"text": "REPLACED"}})
+
+    hook_mgr.register("pre_tool_call", replace_input)
+    ex = ToolExecutor(registry=r, permission_checker=PermissionChecker(auto_approve=True), hook_manager=hook_mgr)
+    results = await ex.execute([ToolCall(id="h3", name="echo", input={"text": "original"})])
+    assert results[0].output == "REPLACED"
+    assert not results[0].is_error
+
+
+@pytest.mark.asyncio
+async def test_pre_tool_call_allow_proceeds_normally():
+    """pre_tool_call allow must not change behavior."""
+    r = ToolRegistry()
+    r.register(EchoTool())
+    hook_mgr = HookManager()
+
+    async def allow_all(event):
+        return HookResult.allow()
+
+    hook_mgr.register("pre_tool_call", allow_all)
+    ex = ToolExecutor(registry=r, permission_checker=PermissionChecker(auto_approve=True), hook_manager=hook_mgr)
+    results = await ex.execute([ToolCall(id="h4", name="echo", input={"text": "unchanged"})])
+    assert results[0].output == "unchanged"
+
+
+# ── Hook integration: post_tool_call ─────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_post_tool_call_modify_changes_output():
+    """post_tool_call modify must replace the result.output."""
+    r = ToolRegistry()
+    r.register(EchoTool())
+    hook_mgr = HookManager()
+
+    async def replace_output(event: PostToolCallEvent) -> HookResult:
+        return HookResult.modify({"result": "OVERRIDDEN"})
+
+    hook_mgr.register("post_tool_call", replace_output)
+    ex = ToolExecutor(registry=r, permission_checker=PermissionChecker(auto_approve=True), hook_manager=hook_mgr)
+    results = await ex.execute([ToolCall(id="h5", name="echo", input={"text": "hello"})])
+    assert results[0].output == "OVERRIDDEN"
+
+
+@pytest.mark.asyncio
+async def test_post_tool_call_deny_is_ignored():
+    """post_tool_call deny must not change the result (execution already done)."""
+    r = ToolRegistry()
+    r.register(EchoTool())
+    hook_mgr = HookManager()
+
+    async def deny_post(event):
+        return HookResult.deny("too late")
+
+    hook_mgr.register("post_tool_call", deny_post)
+    ex = ToolExecutor(registry=r, permission_checker=PermissionChecker(auto_approve=True), hook_manager=hook_mgr)
+    results = await ex.execute([ToolCall(id="h6", name="echo", input={"text": "real"})])
+    # Result should be the actual output, not an error
+    assert results[0].output == "real"
+    assert not results[0].is_error
+
+
+@pytest.mark.asyncio
+async def test_no_hook_manager_still_works():
+    """ToolExecutor with no hook_manager must behave identically to before."""
+    r = ToolRegistry()
+    r.register(EchoTool())
+    ex = ToolExecutor(registry=r, permission_checker=PermissionChecker(auto_approve=True))
+    results = await ex.execute([ToolCall(id="h7", name="echo", input={"text": "baseline"})])
+    assert results[0].output == "baseline"
+    assert not results[0].is_error
+
+
+@pytest.mark.asyncio
+async def test_pre_hook_runs_after_permission_check():
+    """pre_tool_call hook must NOT run if PermissionChecker denies first."""
+    r = ToolRegistry()
+    r.register(DenyTool())  # permission="deny" tool
+    hook_mgr = HookManager()
+    hook_called = []
+
+    async def hook_observer(event):
+        hook_called.append(True)
+        return HookResult.allow()
+
+    hook_mgr.register("pre_tool_call", hook_observer)
+    ex = ToolExecutor(registry=r, permission_checker=PermissionChecker(), hook_manager=hook_mgr)
+    results = await ex.execute([ToolCall(id="h8", name="deny_tool", input={"text": "x"})])
+
+    # PermissionChecker denied — hook should not run
+    assert hook_called == []
+    assert results[0].is_error
+    assert "Permission denied" in results[0].output
