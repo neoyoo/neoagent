@@ -107,3 +107,71 @@ def test_skill_deactivate_routes_to_observer():
     ObserverSubscriber(obs, bus)
     bus.emit(SkillChangeEvent(name="memory", active=False))
     obs.on_skill_deactivate.assert_called_once_with("memory")
+
+
+# ── Fix 2: detach() unsubscribes all handlers ─────────────────────────────────
+
+def test_detach_stops_event_delivery():
+    """After detach(), events must no longer be delivered to the observer."""
+    bus = EventBus()
+    obs = _make_observer()
+    subscriber = ObserverSubscriber(obs, bus)
+
+    # Verify events are delivered before detach
+    bus.emit(ToolCallEvent(name="bash", input_data={"cmd": "ls"}, call_id="c1"))
+    obs.on_tool_call.assert_called_once()
+
+    # Detach and verify no further delivery
+    subscriber.detach(bus)
+    bus.emit(ToolCallEvent(name="bash", input_data={"cmd": "ls"}, call_id="c2"))
+    obs.on_tool_call.assert_called_once()  # still once — not called again
+
+
+def test_detach_clears_handler_list():
+    """detach() must clear _handlers so the list is empty afterwards."""
+    bus = EventBus()
+    obs = _make_observer()
+    subscriber = ObserverSubscriber(obs, bus)
+    assert len(subscriber._handlers) > 0
+    subscriber.detach(bus)
+    assert subscriber._handlers == []
+
+
+def test_double_enable_logging_does_not_leak_handlers():
+    """Calling enable_logging() twice must not register handlers twice.
+
+    After the second enable, each event should only be delivered once (not twice).
+    """
+    bus = EventBus()
+    obs1 = _make_observer()
+    obs2 = _make_observer()
+
+    sub1 = ObserverSubscriber(obs1, bus)
+    # Detach first subscriber (simulates what agent.enable_logging does)
+    sub1.detach(bus)
+
+    # Attach second subscriber
+    ObserverSubscriber(obs2, bus)
+
+    bus.emit(ToolCallEvent(name="bash", input_data={"cmd": "ls"}, call_id="c3"))
+    # obs1 must NOT receive events after detach
+    obs1.on_tool_call.assert_not_called()
+    # obs2 receives exactly once
+    obs2.on_tool_call.assert_called_once()
+
+
+def test_attach_without_bus_arg_then_attach_manually():
+    """ObserverSubscriber(observer) without bus arg must not subscribe anything until attach()."""
+    bus = EventBus()
+    obs = _make_observer()
+    subscriber = ObserverSubscriber(obs)  # no bus arg
+    assert subscriber._handlers == []
+
+    # Emit before attach — must not reach observer
+    bus.emit(ToolCallEvent(name="bash", input_data={}, call_id="x"))
+    obs.on_tool_call.assert_not_called()
+
+    # Attach and verify delivery
+    subscriber.attach(bus)
+    bus.emit(ToolCallEvent(name="bash", input_data={}, call_id="y"))
+    obs.on_tool_call.assert_called_once()

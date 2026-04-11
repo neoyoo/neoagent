@@ -373,7 +373,7 @@ async def test_loop_emits_memory_extract_event_when_memory_manager_present():
     bus.subscribe(MemoryExtractEvent, lambda e: extract_events.append(e))
 
     mock_memory_manager = MagicMock()
-    mock_memory_manager.maybe_extract = AsyncMock()
+    mock_memory_manager.maybe_extract = AsyncMock(return_value=(False, 0))
     mock_memory_manager.record_tool_calls = MagicMock()
 
     loop = QueryLoop(

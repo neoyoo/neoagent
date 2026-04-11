@@ -148,14 +148,16 @@ class QueryLoop:
                     current_tokens = self._compressor.estimate_tokens(msgs)
                     tool_calls_before = session_state.memory_tool_calls if session_state else 0
                     token_baseline_before = session_state.memory_token_baseline if session_state else 0
-                    await self._memory_manager.maybe_extract(msgs, current_tokens, session_state=session_state)
-                    # Emit MemoryExtractEvent: triggered if tool_calls were reset (extraction ran)
-                    triggered = session_state is not None and session_state.memory_tool_calls < tool_calls_before
+                    triggered, items_stored = await self._memory_manager.maybe_extract(
+                        msgs, current_tokens, session_state=session_state
+                    )
                     token_delta = max(0, current_tokens - token_baseline_before)
+                    # TODO: filenames not yet returned by extractor; tracked as future improvement
                     self._bus.emit(MemoryExtractEvent(
                         triggered=triggered,
                         tool_calls=tool_calls_before,
                         token_delta=token_delta,
+                        items_stored=items_stored,
                     ))
                 return ConversationResult(turns=turns, reason="completed")
             if self._executor is None:

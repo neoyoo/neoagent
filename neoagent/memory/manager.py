@@ -30,11 +30,15 @@ class MemoryManager:
         messages: list[Message],
         current_tokens: int,
         session_state: "SessionState | None" = None,
-    ) -> None:
+    ) -> tuple[bool, int]:
         """Extract memories if trigger conditions are met.
 
         First call sets the token baseline. Extraction can still fire on the
         first call if tool_calls_count already meets the threshold.
+
+        Returns:
+            (triggered, items_stored) — triggered is True when extraction ran,
+            items_stored is the number of memory items written (0 if not triggered).
         """
         if session_state is not None:
             if session_state.memory_token_baseline == 0:
@@ -50,9 +54,11 @@ class MemoryManager:
                 logger.info("Stored %d memory item(s)", extracted)
                 session_state.memory_tool_calls = 0
                 session_state.memory_token_baseline = current_tokens
+                return (True, extracted)
+            return (False, 0)
         else:
             # Fallback: no session_state — no-op (state tracking requires session)
-            pass
+            return (False, 0)
 
     def build_prompt_section(self, query: str | None = None) -> str:
         return self._retriever.retrieve(query)

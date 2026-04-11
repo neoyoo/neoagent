@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Callable
 from neoagent.events import (
     EventBus,
     ProviderRequestEvent, ProviderResponseEvent,
@@ -14,19 +15,42 @@ class ObserverSubscriber:
 
     适配器模式：Observer 保留全部日志逻辑，ObserverSubscriber 负责事件转发。
     Observer 本身不需要知道 EventBus 的存在。
+
+    Usage:
+        subscriber = ObserverSubscriber(observer)
+        subscriber.attach(bus)   # subscribe all handlers
+        ...
+        subscriber.detach(bus)   # unsubscribe all handlers (cleanup / re-attach)
     """
 
-    def __init__(self, observer: Observer, bus: EventBus) -> None:
+    def __init__(self, observer: Observer, bus: EventBus | None = None) -> None:
         self._observer = observer
-        bus.subscribe(ProviderRequestEvent, self._on_provider_request)
-        bus.subscribe(ProviderResponseEvent, self._on_provider_response)
-        bus.subscribe(ToolCallEvent, self._on_tool_call)
-        bus.subscribe(ToolResultEvent, self._on_tool_result)
-        bus.subscribe(CompressCheckEvent, self._on_compress_check)
-        bus.subscribe(CompressDoneEvent, self._on_compress_done)
-        bus.subscribe(CompressFallbackEvent, self._on_compress_fallback)
-        bus.subscribe(MemoryExtractEvent, self._on_memory_extract)
-        bus.subscribe(SkillChangeEvent, self._on_skill_change)
+        self._handlers: list[tuple[type, Callable]] = []
+        if bus is not None:
+            self.attach(bus)
+
+    def attach(self, bus: EventBus) -> None:
+        """Subscribe all handlers to the bus and track them for later detach."""
+        pairs: list[tuple[type, Callable]] = [
+            (ProviderRequestEvent, self._on_provider_request),
+            (ProviderResponseEvent, self._on_provider_response),
+            (ToolCallEvent, self._on_tool_call),
+            (ToolResultEvent, self._on_tool_result),
+            (CompressCheckEvent, self._on_compress_check),
+            (CompressDoneEvent, self._on_compress_done),
+            (CompressFallbackEvent, self._on_compress_fallback),
+            (MemoryExtractEvent, self._on_memory_extract),
+            (SkillChangeEvent, self._on_skill_change),
+        ]
+        for event_type, handler in pairs:
+            bus.subscribe(event_type, handler)
+            self._handlers.append((event_type, handler))
+
+    def detach(self, bus: EventBus) -> None:
+        """Unsubscribe all tracked handlers from the bus."""
+        for event_type, handler in self._handlers:
+            bus.unsubscribe(event_type, handler)
+        self._handlers.clear()
 
     def _on_provider_request(self, e: ProviderRequestEvent) -> None:
         self._observer.on_provider_request(e.system, list(e.messages), list(e.tools), e.turn)

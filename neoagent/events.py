@@ -39,7 +39,7 @@ class ProviderResponseEvent(Event):
 @dataclass(frozen=True)
 class ToolCallEvent(Event):
     name: str
-    input_data: dict
+    input_data: dict  # MappingProxyType at runtime (from ToolExecutor); dict for test/compat construction
     call_id: str
 
 

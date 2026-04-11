@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from neoagent.core.types import ToolCall, ToolResult
@@ -67,10 +68,11 @@ class ToolExecutor:
             self._emit_result(call, result)
             return idx, result
 
-        # Emit ToolCallEvent before execution; deepcopy to prevent handler mutation
+        # Emit ToolCallEvent before execution; wrap in MappingProxyType to prevent handler mutation
         if self._bus:
             from neoagent.events import ToolCallEvent
-            self._bus.emit(ToolCallEvent(name=call.name, input_data=copy.deepcopy(call.input), call_id=call.id))
+            payload = MappingProxyType(copy.deepcopy(call.input))
+            self._bus.emit(ToolCallEvent(name=call.name, input_data=payload, call_id=call.id))
 
         try:
             validated_input = tool.input_model.model_validate(call.input)

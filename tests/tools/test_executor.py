@@ -171,30 +171,40 @@ async def test_executor_emits_result_event_on_error():
     assert received[0].is_error
 
 
-# ── Fix 1: ToolCallEvent input_data is a deepcopy ────────────────────────────
+# ── Fix 1: ToolCallEvent input_data is MappingProxyType (immutable) ──────────
 
 @pytest.mark.asyncio
-async def test_tool_call_event_input_data_is_deepcopy():
-    """Handler mutation of ToolCallEvent.input_data must not affect actual execution."""
+async def test_tool_call_event_input_data_is_immutable():
+    """ToolCallEvent.input_data must be a MappingProxyType — handler mutation raises TypeError."""
+    from types import MappingProxyType
     r = ToolRegistry()
     r.register(EchoTool())
     bus = EventBus()
 
-    original_input = {"text": "original"}
-    mutated_in_handler: dict = {}
+    received_events: list[ToolCallEvent] = []
+    bus.subscribe(ToolCallEvent, lambda e: received_events.append(e))
 
-    def mutating_handler(event: ToolCallEvent):
-        # Mutate the event's input_data — must NOT affect execution
-        event.input_data["text"] = "mutated"
-        mutated_in_handler.update(event.input_data)
-
-    bus.subscribe(ToolCallEvent, mutating_handler)
     ex = ToolExecutor(registry=r, permission_checker=PermissionChecker(auto_approve=True), event_bus=bus)
-    results = await ex.execute([ToolCall(id="c9", name="echo", input=original_input)])
+    await ex.execute([ToolCall(id="c9", name="echo", input={"text": "original"})])
 
-    # Handler received the event (and mutated its copy)
-    assert mutated_in_handler["text"] == "mutated"
-    # But actual execution used the original value
+    assert len(received_events) == 1
+    assert isinstance(received_events[0].input_data, MappingProxyType)
+    # Mutation must raise TypeError
+    with pytest.raises(TypeError):
+        received_events[0].input_data["text"] = "mutated"  # type: ignore[index]
+
+
+@pytest.mark.asyncio
+async def test_tool_call_event_input_data_does_not_affect_execution():
+    """Even though input_data is immutable, actual tool execution uses the original input."""
+    r = ToolRegistry()
+    r.register(EchoTool())
+    bus = EventBus()
+    bus.subscribe(ToolCallEvent, lambda e: None)  # subscriber exists but can't mutate
+
+    ex = ToolExecutor(registry=r, permission_checker=PermissionChecker(auto_approve=True), event_bus=bus)
+    results = await ex.execute([ToolCall(id="c9b", name="echo", input={"text": "original"})])
+
     assert results[0].output == "original"
     assert not results[0].is_error
 

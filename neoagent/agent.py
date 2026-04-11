@@ -161,21 +161,29 @@ class NeoAgent:
         from neoagent.observe_subscriber import ObserverSubscriber
         from pathlib import Path as _Path
 
-        # Close existing observer if any to avoid file-handle leaks
-        if self._observer:
+        # Detach old subscriber and close old observer to prevent handler leaks
+        if self._observer_subscriber is not None:
+            self._observer_subscriber.detach(self._event_bus)
+            self._observer_subscriber = None
+        if self._observer is not None:
             self._observer.close()
+            self._observer = None
 
         if log_dir is None:
             log_dir = _Path.cwd() / "logs"
 
         observer = Observer(log_dir=log_dir, console=console)
-        self._observer_subscriber = ObserverSubscriber(observer, self._event_bus)
+        subscriber = ObserverSubscriber(observer)
+        subscriber.attach(self._event_bus)
+        self._observer_subscriber = subscriber
         self._observer = observer
         return observer
 
     def disable_logging(self) -> None:
         """Disable logging and close any open log files."""
-        if self._observer:
+        if self._observer_subscriber is not None:
+            self._observer_subscriber.detach(self._event_bus)
+            self._observer_subscriber = None
+        if self._observer is not None:
             self._observer.close()
             self._observer = None
-            self._observer_subscriber = None

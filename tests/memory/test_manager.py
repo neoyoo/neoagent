@@ -153,3 +153,36 @@ def test_record_tool_calls_no_session_state_is_noop() -> None:
     manager = MemoryManager(store, _make_provider())
     # Should not raise
     manager.record_tool_calls(5, session_state=None)
+
+
+# ── Fix 3: maybe_extract returns (triggered, items_stored) ───────────────────
+
+@pytest.mark.asyncio
+async def test_maybe_extract_returns_false_zero_when_not_triggered(manager: MemoryManager) -> None:
+    """maybe_extract must return (False, 0) when extraction does not trigger."""
+    state = SessionState()
+    result = await manager.maybe_extract(_msgs(), current_tokens=100, session_state=state)
+    assert result == (False, 0)
+
+
+@pytest.mark.asyncio
+async def test_maybe_extract_returns_true_count_when_triggered(tmp_path: Path) -> None:
+    """maybe_extract must return (True, N) when extraction runs and stores N items."""
+    import json
+    items = [{"filename": "g.md", "description": "goals", "content": "# G\n- x\n"}]
+    provider = _make_provider(json.dumps(items))
+    store = MemoryStore(tmp_path)
+    manager = MemoryManager(store, provider)
+    state = SessionState()
+    # Trigger via tool calls threshold
+    manager.record_tool_calls(5, session_state=state)
+    triggered, items_stored = await manager.maybe_extract(_msgs(), current_tokens=500, session_state=state)
+    assert triggered is True
+    assert items_stored == 1
+
+
+@pytest.mark.asyncio
+async def test_maybe_extract_returns_false_zero_with_no_session_state(manager: MemoryManager) -> None:
+    """maybe_extract with no session_state is a no-op and returns (False, 0)."""
+    result = await manager.maybe_extract(_msgs(), current_tokens=1000, session_state=None)
+    assert result == (False, 0)
