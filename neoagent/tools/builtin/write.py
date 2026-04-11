@@ -25,13 +25,12 @@ class WriteTool(BaseTool):
     async def execute(self, input: BaseModel) -> ToolResult:
         assert isinstance(input, WriteInput)
         try:
-            validate_path(input.file_path, self._allowed)
+            path = validate_path(input.file_path, self._allowed)
         except ValueError as e:
             return ToolResult(call_id="", output=str(e), is_error=True)
         try:
-            path = Path(input.file_path)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(input.content)
-            return ToolResult(call_id="", output=f"Written to {input.file_path}")
+            return ToolResult(call_id="", output=f"Written to {path}")
         except Exception as e:
             return ToolResult(call_id="", output=str(e), is_error=True)

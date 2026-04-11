@@ -25,11 +25,10 @@ class GlobTool(BaseTool):
     async def execute(self, input: BaseModel) -> ToolResult:
         assert isinstance(input, GlobInput)
         try:
-            validate_path(input.path, self._allowed)
+            base = validate_path(input.path, self._allowed)
         except ValueError as e:
             return ToolResult(call_id="", output=str(e), is_error=True)
         try:
-            base = Path(input.path)
             if not base.exists():
                 return ToolResult(call_id="", output=f"Path not found: {input.path}", is_error=True)
             matches = sorted(str(p) for p in base.glob(input.pattern) if p.is_file())

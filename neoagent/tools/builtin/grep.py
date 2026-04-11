@@ -27,11 +27,11 @@ class GrepTool(BaseTool):
     async def execute(self, input: BaseModel) -> ToolResult:
         assert isinstance(input, GrepInput)
         try:
-            validate_path(input.path, self._allowed)
+            path = validate_path(input.path, self._allowed)
         except ValueError as e:
             return ToolResult(call_id="", output=str(e), is_error=True)
         try:
-            cmd = ["grep", "-r", "-n", "-E", input.pattern, input.path]
+            cmd = ["grep", "-r", "-n", "-E", input.pattern, str(path)]
             if input.glob_filter:
                 cmd.extend(["--include", input.glob_filter])
             proc = await asyncio.create_subprocess_exec(

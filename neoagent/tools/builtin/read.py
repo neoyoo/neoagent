@@ -26,11 +26,11 @@ class ReadTool(BaseTool):
     async def execute(self, input: BaseModel) -> ToolResult:
         assert isinstance(input, ReadInput)
         try:
-            validate_path(input.file_path, self._allowed)
+            path = validate_path(input.file_path, self._allowed)
         except ValueError as e:
             return ToolResult(call_id="", output=str(e), is_error=True)
         try:
-            with open(input.file_path, "r") as f:
+            with open(path, "r") as f:
                 all_lines = f.readlines()
             selected = all_lines[input.offset : input.offset + input.limit]
             numbered = []

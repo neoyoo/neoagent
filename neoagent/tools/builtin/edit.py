@@ -26,11 +26,10 @@ class EditTool(BaseTool):
     async def execute(self, input: BaseModel) -> ToolResult:
         assert isinstance(input, EditInput)
         try:
-            validate_path(input.file_path, self._allowed)
+            path = validate_path(input.file_path, self._allowed)
         except ValueError as e:
             return ToolResult(call_id="", output=str(e), is_error=True)
         try:
-            path = Path(input.file_path)
             if not path.exists():
                 return ToolResult(
                     call_id="", output=f"File not found: {input.file_path}", is_error=True
@@ -51,6 +50,6 @@ class EditTool(BaseTool):
                 )
             new_content = content.replace(input.old_string, input.new_string, 1)
             path.write_text(new_content)
-            return ToolResult(call_id="", output=f"Edited {input.file_path}")
+            return ToolResult(call_id="", output=f"Edited {path}")
         except Exception as e:
             return ToolResult(call_id="", output=str(e), is_error=True)
