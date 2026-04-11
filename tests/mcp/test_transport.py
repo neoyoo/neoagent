@@ -165,10 +165,101 @@ async def test_stdiotransport_receive_eof_raises():
     mock_proc.stdin.drain = AsyncMock()
     mock_proc.stdout = AsyncMock()
     mock_proc.stdout.readline = AsyncMock(return_value=b"")
+    mock_proc.stderr = AsyncMock()
+    mock_proc.stderr.readline = AsyncMock(return_value=b"")
     mock_proc.returncode = None
+    mock_proc.wait = AsyncMock()
 
     with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
         t = StdioTransport(command=["echo"])
         await t.connect()
         with pytest.raises(ConnectionError):
             await t.receive()
+        await t.close()
+
+
+# ── StdioTransport stderr drain ───────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_stdiotransport_connect_starts_stderr_drain_task():
+    """connect() must create a background task to drain stderr."""
+    mock_proc = MagicMock()
+    mock_proc.stdin = MagicMock()
+    mock_proc.stdin.drain = AsyncMock()
+    mock_proc.stdout = AsyncMock()
+    mock_proc.stderr = AsyncMock()
+    # stderr.readline returns EOF immediately so drain task exits cleanly
+    mock_proc.stderr.readline = AsyncMock(return_value=b"")
+    mock_proc.returncode = None
+    mock_proc.wait = AsyncMock()
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        t = StdioTransport(command=["node", "server.js"])
+        await t.connect()
+        assert t._stderr_task is not None
+        # Drain task should be an asyncio.Task
+        import asyncio as _asyncio
+        assert isinstance(t._stderr_task, _asyncio.Task)
+        await t.close()
+        assert t._stderr_task is None
+
+
+@pytest.mark.asyncio
+async def test_stdiotransport_close_cancels_stderr_task():
+    """close() must cancel the stderr drain task."""
+    mock_proc = MagicMock()
+    mock_proc.stdin = MagicMock()
+    mock_proc.stdin.drain = AsyncMock()
+    mock_proc.stdout = AsyncMock()
+    mock_proc.stderr = AsyncMock()
+    # Keep stderr.readline blocking so the task stays alive until cancelled
+    cancelled_event = asyncio.Event()
+
+    async def blocking_readline():
+        await asyncio.sleep(9999)  # stays blocked until cancelled
+        return b""
+
+    mock_proc.stderr.readline = blocking_readline
+    mock_proc.returncode = None
+    mock_proc.wait = AsyncMock()
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        t = StdioTransport(command=["node", "server.js"])
+        await t.connect()
+        task = t._stderr_task
+        assert task is not None and not task.done()
+
+        await t.close()
+
+    # After close(), the task must have been cancelled and cleaned up
+    assert t._stderr_task is None
+    assert task.done()
+
+
+@pytest.mark.asyncio
+async def test_stdiotransport_stderr_lines_are_logged(caplog):
+    """Stderr output from the MCP server must be logged at DEBUG level."""
+    import logging
+
+    mock_proc = MagicMock()
+    mock_proc.stdin = MagicMock()
+    mock_proc.stdin.drain = AsyncMock()
+    mock_proc.stdout = AsyncMock()
+    mock_proc.stderr = AsyncMock()
+
+    lines = [b"MCP server started\n", b"debug info\n", b""]
+    line_iter = iter(lines)
+    mock_proc.stderr.readline = AsyncMock(side_effect=lambda: next(line_iter))
+    mock_proc.returncode = None
+    mock_proc.wait = AsyncMock()
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        with caplog.at_level(logging.DEBUG, logger="neoagent.mcp.transport"):
+            t = StdioTransport(command=["node", "server.js"])
+            await t.connect()
+            # Allow the drain task to process the stderr lines
+            await asyncio.sleep(0.05)
+            await t.close()
+
+    logged = caplog.text
+    assert "MCP server started" in logged or "debug info" in logged

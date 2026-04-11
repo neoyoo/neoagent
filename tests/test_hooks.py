@@ -100,8 +100,78 @@ def test_pre_provider_call_event_fields():
     msgs = [Message(role="user", content="hi")]
     e = PreProviderCallEvent(system="sys", messages=msgs, tools=[{"name": "bash"}])
     assert e.system == "sys"
-    assert e.messages == msgs
-    assert e.tools == [{"name": "bash"}]
+    # messages and tools are stored as immutable tuples
+    assert e.messages == tuple(msgs)
+    assert e.tools == ({"name": "bash"},)
+
+
+# ── Immutable event payload tests ─────────────────────────────────────────────
+
+def test_pre_tool_call_event_tool_input_is_mappingproxytype():
+    """PreToolCallEvent.tool_input must be a MappingProxyType, not a plain dict."""
+    from types import MappingProxyType
+    e = PreToolCallEvent(tool_name="bash", tool_input={"command": "ls"}, call_id="c1")
+    assert isinstance(e.tool_input, MappingProxyType)
+
+
+def test_pre_tool_call_event_tool_input_inplace_mutation_raises():
+    """Mutating PreToolCallEvent.tool_input in-place must raise TypeError.
+
+    Handlers must use HookResult.modify to change inputs, not mutate the event.
+    """
+    e = PreToolCallEvent(tool_name="bash", tool_input={"command": "ls"}, call_id="c1")
+    with pytest.raises(TypeError):
+        e.tool_input["command"] = "rm -rf /"  # type: ignore
+
+
+def test_post_tool_call_event_tool_input_is_mappingproxytype():
+    """PostToolCallEvent.tool_input must be a MappingProxyType."""
+    from types import MappingProxyType
+    e = PostToolCallEvent(
+        tool_name="bash", tool_input={"cmd": "ls"},
+        call_id="c1", result="ok", is_error=False,
+    )
+    assert isinstance(e.tool_input, MappingProxyType)
+
+
+def test_post_tool_call_event_tool_input_inplace_mutation_raises():
+    """Mutating PostToolCallEvent.tool_input in-place must raise TypeError."""
+    e = PostToolCallEvent(
+        tool_name="bash", tool_input={"cmd": "ls"},
+        call_id="c1", result="ok", is_error=False,
+    )
+    with pytest.raises(TypeError):
+        e.tool_input["cmd"] = "dangerous"  # type: ignore
+
+
+def test_pre_provider_call_event_messages_is_tuple():
+    """PreProviderCallEvent.messages must be stored as an immutable tuple."""
+    msgs = [Message(role="user", content="hi")]
+    e = PreProviderCallEvent(system="sys", messages=msgs, tools=[])
+    assert isinstance(e.messages, tuple)
+
+
+def test_pre_provider_call_event_tools_is_tuple():
+    """PreProviderCallEvent.tools must be stored as an immutable tuple."""
+    e = PreProviderCallEvent(system="sys", messages=[], tools=[{"name": "bash"}])
+    assert isinstance(e.tools, tuple)
+
+
+def test_pre_provider_call_event_accepts_tuples_directly():
+    """PreProviderCallEvent must accept tuples passed directly without conversion."""
+    msgs = (Message(role="user", content="hi"),)
+    e = PreProviderCallEvent(system="sys", messages=msgs, tools=({"name": "t"},))
+    assert isinstance(e.messages, tuple)
+    assert isinstance(e.tools, tuple)
+
+
+def test_pre_tool_call_event_accepts_mappingproxytype_directly():
+    """PreToolCallEvent must accept MappingProxyType passed directly without re-wrapping."""
+    from types import MappingProxyType
+    mp = MappingProxyType({"command": "ls"})
+    e = PreToolCallEvent(tool_name="bash", tool_input=mp, call_id="c1")
+    assert isinstance(e.tool_input, MappingProxyType)
+    assert e.tool_input["command"] == "ls"
 
 
 def test_post_provider_call_event_fields():

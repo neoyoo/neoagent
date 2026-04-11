@@ -54,6 +54,7 @@ class StdioTransport(MCPTransport):
         self._command = command
         self._extra_env: dict[str, str] = env or {}
         self._proc: asyncio.subprocess.Process | None = None
+        self._stderr_task: asyncio.Task | None = None
 
     def _safe_env(self) -> dict[str, str]:
         """Build whitelist-filtered env dict, merged with caller-supplied extras."""
@@ -72,6 +73,30 @@ class StdioTransport(MCPTransport):
             env=env,
         )
         logger.debug("StdioTransport: connected to %s (pid=%s)", self._command, self._proc.pid)
+        # Continuously drain stderr to prevent pipe-full deadlock when the
+        # MCP server writes diagnostic output.
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
+
+    async def _drain_stderr(self) -> None:
+        """Background task: read stderr line-by-line and log at DEBUG level.
+
+        Prevents the subprocess from deadlocking when the OS pipe buffer fills
+        because nobody is consuming stderr output.
+        """
+        try:
+            while self._proc and self._proc.stderr:
+                line = await self._proc.stderr.readline()
+                if not line:
+                    break
+                logger.debug(
+                    "MCP stderr [%s]: %s",
+                    self._command[0],
+                    line.decode("utf-8", errors="replace").rstrip(),
+                )
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.debug("StdioTransport: stderr drain ended: %s", exc)
 
     async def send(self, message: dict) -> None:
         """Write a JSON line to the subprocess stdin."""
@@ -100,6 +125,15 @@ class StdioTransport(MCPTransport):
 
     async def close(self) -> None:
         """Terminate the subprocess gracefully."""
+        # Cancel and await the stderr drain task first to avoid resource leaks.
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
+            try:
+                await self._stderr_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._stderr_task = None
+
         if self._proc is None:
             return
         try:

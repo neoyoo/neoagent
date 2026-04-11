@@ -23,5 +23,9 @@ class ToolRegistry:
         """deny 的工具不暴露给模型。"""
         return [t.get_schema() for t in self._tools.values() if t.permission != "deny"]
 
+    def unregister(self, name: str) -> None:
+        """Remove a tool by name. No-op if the tool is not registered."""
+        self._tools.pop(name, None)
+
     def all_tools(self) -> dict[str, BaseTool]:
         return dict(self._tools)

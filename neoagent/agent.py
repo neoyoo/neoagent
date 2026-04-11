@@ -281,15 +281,17 @@ class NeoAgent:
         if client is None:
             return
 
-        # Remove tools with this server's prefix from ToolRegistry
+        # Remove tools with this server's prefix from ToolRegistry and
+        # DeferredToolRegistry so that tool_search no longer returns ghost entries.
         prefix = f"{name}__"
-        tools_to_remove = [
+        tools_to_remove = {
             tool_name
             for tool_name in self._registry.all_tools()
             if tool_name.startswith(prefix)
-        ]
+        }
         for tool_name in tools_to_remove:
-            self._registry._tools.pop(tool_name, None)
+            self._registry.unregister(tool_name)
+        self._deferred_registry.remove(tools_to_remove)
 
         await client.close()
 

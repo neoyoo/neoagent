@@ -70,8 +70,19 @@ class DeferredToolRegistry:
             return self._search_plus_keyword(query[1:])
         return self._search_regex(query)
 
+    def remove(self, tool_names: set[str]) -> None:
+        """Remove entries from the index entirely (e.g. after MCP server disconnect).
+
+        Both the global _all index and the _deferred set are cleaned up.
+        Silently ignores names that were never registered.
+        """
+        for name in tool_names:
+            self._all.pop(name, None)
+            self._deferred.discard(name)
+        logger.debug("DeferredToolRegistry: removed %s", tool_names)
+
     def reset(self) -> None:
-        """Clear all state. Call when starting a new session."""
+        """Clear all state. Intended for tests/admin operations, not session lifecycle."""
         self._all.clear()
         self._deferred.clear()
 

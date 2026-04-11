@@ -237,3 +237,65 @@ def test_search_only_returns_deferred_tools():
     reg.promote({"github__create_issue"})
     results = reg.search("issue")
     assert results == []
+
+
+# ── remove() ──────────────────────────────────────────────────────────────────
+
+def test_remove_erases_deferred_entry():
+    """remove() must delete tools from the index so they are no longer searchable."""
+    reg = DeferredToolRegistry()
+    reg.register("github__create_issue", "Create an issue")
+    reg.register("github__list_repos", "List repos")
+    reg.remove({"github__create_issue"})
+    assert not reg.is_deferred("github__create_issue")
+    # Other tools must be unaffected
+    assert reg.is_deferred("github__list_repos")
+
+
+def test_remove_also_erases_from_all_index():
+    """remove() must clear the _all index so search cannot find ghost entries."""
+    reg = DeferredToolRegistry()
+    reg.register("github__create_issue", "Create an issue")
+    reg.remove({"github__create_issue"})
+    # search must not find the removed tool even via select:
+    results = reg.search("select:github__create_issue")
+    assert results == []
+    results = reg.search("issue")
+    assert results == []
+
+
+def test_remove_promoted_tool_cleans_up():
+    """remove() must work for tools that were already promoted (not in _deferred)."""
+    reg = DeferredToolRegistry()
+    reg.register("github__create_issue", "desc")
+    reg.promote({"github__create_issue"})
+    # Tool is in _all but not in _deferred; remove should not raise
+    reg.remove({"github__create_issue"})
+    results = reg.search("select:github__create_issue")
+    assert results == []
+
+
+def test_remove_nonexistent_no_error():
+    """remove() of an unknown tool name must not raise."""
+    reg = DeferredToolRegistry()
+    reg.remove({"totally__unknown"})  # no error
+
+
+def test_remove_empty_set_no_error():
+    """remove() with an empty set must not change state."""
+    reg = DeferredToolRegistry()
+    reg.register("github__create_issue", "desc")
+    reg.remove(set())
+    assert reg.is_deferred("github__create_issue")
+
+
+def test_remove_multiple_tools():
+    """remove() must handle removing multiple tools at once."""
+    reg = DeferredToolRegistry()
+    reg.register("a__t1", "desc1")
+    reg.register("a__t2", "desc2")
+    reg.register("a__t3", "desc3")
+    reg.remove({"a__t1", "a__t3"})
+    assert not reg.is_deferred("a__t1")
+    assert reg.is_deferred("a__t2")
+    assert not reg.is_deferred("a__t3")

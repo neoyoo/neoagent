@@ -163,8 +163,46 @@ async def test_agent_remove_mcp_server(mock_create):
 
     mock_client.close.assert_called_once()
     assert agent.list_mcp_servers() == []
-    # Tool must be unregistered
+    # Tool must be unregistered from ToolRegistry
     assert agent._registry.get_tool("github__create_issue") is None
+
+
+@pytest.mark.asyncio
+@patch("neoagent.agent._create_provider")
+async def test_agent_remove_mcp_server_cleans_deferred_registry(mock_create):
+    """remove_mcp_server() must also remove tools from DeferredToolRegistry.
+
+    Without this, tool_search can still return ghost entries for removed servers.
+    """
+    from neoagent.mcp.client import MCPToolInfo
+    mock_create.return_value = _make_mock_provider()
+
+    mock_client = MagicMock()
+    mock_client.name = "github"
+    mock_client.connect = AsyncMock()
+    mock_client.list_tools = AsyncMock(return_value=[
+        MCPToolInfo("create_issue", "Create a GitHub issue", {"type": "object", "properties": {}}),
+        MCPToolInfo("list_repos", "List repositories", {"type": "object", "properties": {}}),
+    ])
+    mock_client.close = AsyncMock()
+
+    with patch("neoagent.agent.MCPClient", return_value=mock_client):
+        with patch("neoagent.agent.StdioTransport"):
+            agent = NeoAgent(NeoAgentConfig(api_key="sk-test"))
+            await agent.add_mcp_server("github", command=["npx", "server-github"])
+
+            # Tools must be in deferred registry before removal
+            assert agent._deferred_registry.is_deferred("github__create_issue")
+            assert agent._deferred_registry.is_deferred("github__list_repos")
+
+            await agent.remove_mcp_server("github")
+
+    # After removal, deferred registry must have no ghost entries
+    assert not agent._deferred_registry.is_deferred("github__create_issue")
+    assert not agent._deferred_registry.is_deferred("github__list_repos")
+    # search must not return removed tools
+    results = agent._deferred_registry.search("github")
+    assert results == []
 
 
 @pytest.mark.asyncio

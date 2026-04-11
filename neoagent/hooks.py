@@ -2,6 +2,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Awaitable, Callable, Literal
 
 from neoagent.core.types import Message
@@ -45,10 +46,19 @@ class PreToolCallEvent:
 
     modify: set modified_data = {"tool_input": {...}} to replace input dict.
     deny:   return error ToolResult with reason, skip execution.
+
+    ``tool_input`` is stored as a ``MappingProxyType`` so in-place mutation by
+    handlers raises ``TypeError``, enforcing the HookResult.modify protocol.
     """
     tool_name: str
-    tool_input: dict
+    tool_input: MappingProxyType
     call_id: str
+
+    def __post_init__(self) -> None:
+        # Ensure tool_input is always an immutable MappingProxyType even when
+        # callers pass a plain dict (frozen dataclass requires object.__setattr__).
+        if not isinstance(self.tool_input, MappingProxyType):
+            object.__setattr__(self, "tool_input", MappingProxyType(dict(self.tool_input)))
 
 
 @dataclass(frozen=True)
@@ -57,12 +67,18 @@ class PostToolCallEvent:
 
     modify: set modified_data = {"result": "..."} to replace output string.
     deny:   ignored (execution already happened).
+
+    ``tool_input`` is stored as a ``MappingProxyType`` — see ``PreToolCallEvent``.
     """
     tool_name: str
-    tool_input: dict
+    tool_input: MappingProxyType
     call_id: str
     result: str
     is_error: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.tool_input, MappingProxyType):
+            object.__setattr__(self, "tool_input", MappingProxyType(dict(self.tool_input)))
 
 
 @dataclass(frozen=True)
@@ -72,10 +88,19 @@ class PreProviderCallEvent:
     modify: set modified_data with any subset of:
             {"system": "...", "messages": [...], "tools": [...]}
     deny:   skip LLM call; QueryLoop injects "[Hook denied: reason]" assistant message.
+
+    ``messages`` and ``tools`` are stored as immutable ``tuple``s to prevent
+    handlers from mutating the sequences in-place, bypassing HookResult.modify.
     """
     system: str
-    messages: list[Message]
-    tools: list[dict]
+    messages: tuple
+    tools: tuple
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.messages, tuple):
+            object.__setattr__(self, "messages", tuple(self.messages))
+        if not isinstance(self.tools, tuple):
+            object.__setattr__(self, "tools", tuple(self.tools))
 
 
 @dataclass(frozen=True)

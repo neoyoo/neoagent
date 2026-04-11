@@ -380,3 +380,90 @@ async def test_pre_hook_runs_after_permission_check():
     assert hook_called == []
     assert results[0].is_error
     assert "Permission denied" in results[0].output
+
+
+# ── Security: permission re-check after hook modify ───────────────────────────
+
+@pytest.mark.asyncio
+async def test_pre_tool_call_modify_reruns_permission_check():
+    """After pre_tool_call modify, PermissionChecker must run again on modified input.
+
+    Security: a hook must not be able to bypass permission enforcement by
+    substituting input after the initial check has already passed.
+    """
+    r = ToolRegistry()
+    r.register(EchoTool())
+    hook_mgr = HookManager()
+
+    # Count how many times permission check is called
+    check_call_count = []
+
+    class CountingPermissionChecker(PermissionChecker):
+        async def check(self, tool, input):
+            check_call_count.append(dict(input))
+            return await super().check(tool, input)
+
+    async def modifying_hook(event):
+        return HookResult.modify({"tool_input": {"text": "MODIFIED"}})
+
+    hook_mgr.register("pre_tool_call", modifying_hook)
+    ex = ToolExecutor(
+        registry=r,
+        permission_checker=CountingPermissionChecker(auto_approve=True),
+        hook_manager=hook_mgr,
+    )
+    results = await ex.execute([ToolCall(id="sec1", name="echo", input={"text": "original"})])
+
+    # Permission must be checked twice: once before and once after hook modify
+    assert len(check_call_count) == 2
+    # First check on original input, second on modified input
+    assert check_call_count[0] == {"text": "original"}
+    assert check_call_count[1] == {"text": "MODIFIED"}
+    # Execution uses the modified input
+    assert results[0].output == "MODIFIED"
+    assert not results[0].is_error
+
+
+@pytest.mark.asyncio
+async def test_pre_tool_call_modify_permission_denied_on_modified_input():
+    """If PermissionChecker denies the modified input, the call must be blocked."""
+
+    class AskEchoTool(BaseTool):
+        """Echo tool with permission='ask' so checker outcome controls access."""
+        name: str = "ask_echo"
+        description: str = "echo with ask permission"
+        input_model: type[EchoInput] = EchoInput
+        permission: str = "ask"
+        is_concurrent_safe: bool = True
+
+        async def execute(self, input) -> ToolResult:
+            return ToolResult(call_id="", output=input.text)
+
+    r = ToolRegistry()
+    r.register(AskEchoTool())
+    hook_mgr = HookManager()
+
+    call_index = [0]
+
+    async def first_approve_then_deny(tool_name, tool_desc, input_dict):
+        idx = call_index[0]
+        call_index[0] += 1
+        # Approve the first check (original input), deny the second (modified input)
+        return idx == 0
+
+    async def modifying_hook(event):
+        return HookResult.modify({"tool_input": {"text": "DANGEROUS"}})
+
+    hook_mgr.register("pre_tool_call", modifying_hook)
+    ex = ToolExecutor(
+        registry=r,
+        permission_checker=PermissionChecker(ask_callback=first_approve_then_deny),
+        hook_manager=hook_mgr,
+    )
+    results = await ex.execute([ToolCall(id="sec2", name="ask_echo", input={"text": "safe"})])
+
+    # Second permission check (on modified input) must deny the call
+    assert results[0].is_error
+    assert "Permission denied" in results[0].output
+    # Tool must NOT have executed — no output from the tool itself
+    assert "DANGEROUS" not in results[0].output

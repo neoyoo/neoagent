@@ -109,6 +109,19 @@ class ToolExecutor:
                     new_input = pre_result.modified_data.get("tool_input", call.input)
                     call = ToolCall(id=call.id, name=call.name, input=new_input)
                     validated_input = tool.input_model.model_validate(call.input)
+                    # Re-run permission check on the modified input — hooks must not
+                    # be able to bypass PermissionChecker by substituting a safe input
+                    # with a dangerous one after the initial check passed.
+                    allowed = await self._permission.check(tool, validated_input)
+                    if not allowed:
+                        msg = (
+                            f"Permission denied: tool '{tool.name}' is disabled"
+                            if tool.permission == "deny"
+                            else f"Permission denied: tool '{tool.name}' requires user approval"
+                        )
+                        result = ToolResult(call_id=call.id, output=msg, is_error=True)
+                        self._emit_result(call, result)
+                        return idx, result
 
             result = await tool.execute(validated_input)
             result.call_id = call.id
