@@ -1,7 +1,11 @@
 from __future__ import annotations
 import logging
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 from neoagent.core.compress import ContextCompressor
+
+if TYPE_CHECKING:
+    from neoagent.memory.manager import MemoryManager
+
 from neoagent.core.prompt import PromptBuilder
 from neoagent.core.types import ConversationResult, Message, ToolCall, ToolResult, ToolResultBlock, ToolUseBlock, Turn
 from neoagent.providers.base import Provider, Response
@@ -13,7 +17,8 @@ _DEFAULT_MAX_TOKENS = 8096
 
 class QueryLoop:
     def __init__(self, provider: Provider, tool_registry: ToolRegistry, prompt_builder: PromptBuilder,
-                 max_turns: int = 30, context_budget: int = 0, on_turn: Callable[[Turn], None] | None = None):
+                 max_turns: int = 30, context_budget: int = 0, on_turn: Callable[[Turn], None] | None = None,
+                 memory_manager: "MemoryManager | None" = None):
         self._provider = provider
         self._registry = tool_registry
         self._prompt_builder = prompt_builder
@@ -21,6 +26,7 @@ class QueryLoop:
         self.context_budget = context_budget if context_budget > 0 else provider.get_context_window()
         self._on_turn = on_turn
         self._compressor = ContextCompressor(provider=provider)
+        self._memory_manager = memory_manager
 
     async def run(self, messages: list[Message]) -> ConversationResult:
         msgs = list(messages)
@@ -39,8 +45,13 @@ class QueryLoop:
                 turns.append(turn)
                 if self._on_turn:
                     self._on_turn(turn)
+                if self._memory_manager:
+                    current_tokens = self._compressor.estimate_tokens(msgs)
+                    await self._memory_manager.maybe_extract(msgs, current_tokens)
                 return ConversationResult(turns=turns, reason="completed")
             results = await self._registry.execute(tool_calls)
+            if self._memory_manager:
+                self._memory_manager.record_tool_calls(len(tool_calls))
             assistant_msg = Message(role="assistant", content=response.content)
             msgs.append(assistant_msg)
             result_msg = Message(role="user", content=[ToolResultBlock(tool_use_id=r.call_id, content=r.output, is_error=r.is_error) for r in results])

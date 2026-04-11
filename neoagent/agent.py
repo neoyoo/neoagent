@@ -12,10 +12,10 @@ from neoagent.tools.registry import ToolRegistry
 def _create_provider(config: NeoAgentConfig) -> Provider:
     if config.provider == "openai":
         from neoagent.providers.openai import OpenAIProvider
-        return OpenAIProvider(api_key=config.api_key, model=config.model)
+        return OpenAIProvider(api_key=config.api_key, model=config.model, base_url=config.base_url)
     else:
         from neoagent.providers.anthropic import AnthropicProvider
-        return AnthropicProvider(api_key=config.api_key, model=config.model)
+        return AnthropicProvider(api_key=config.api_key, model=config.model, base_url=config.base_url)
 
 
 class NeoAgent:
@@ -53,3 +53,30 @@ class NeoAgent:
 
     async def run(self, messages: list[Message]) -> ConversationResult:
         return await self._loop.run(messages)
+
+    def enable_memory(
+        self,
+        memory_dir: "Path | None" = None,
+        project_key: str | None = None,
+    ) -> None:
+        """Enable persistent memory for this agent."""
+        import hashlib
+        from pathlib import Path as _Path
+        from neoagent.memory.store import MemoryStore
+        from neoagent.memory.manager import MemoryManager
+
+        if memory_dir is None:
+            key = project_key or hashlib.sha1(str(_Path.cwd()).encode()).hexdigest()[:8]
+            memory_dir = _Path.home() / ".neoagent" / "memory" / key
+
+        store = MemoryStore(memory_dir)
+        memory_manager = MemoryManager(store, self._provider)
+
+        self._prompt_builder.add_section(PromptSection(
+            name="memory",
+            content=lambda: memory_manager.build_prompt_section(),
+            priority=5,
+            is_static=False,
+        ))
+
+        self._loop._memory_manager = memory_manager
