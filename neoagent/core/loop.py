@@ -16,9 +16,11 @@ if TYPE_CHECKING:
     from neoagent.memory.manager import MemoryManager
     from neoagent.session import Session, SessionState
     from neoagent.tools.executor import ToolExecutor
+    from neoagent.hooks import HookManager
+    from neoagent.tools.deferred import DeferredToolRegistry
 
 from neoagent.core.prompt import PromptBuilder
-from neoagent.core.types import ConversationResult, Message, ToolCall, ToolResult, ToolResultBlock, ToolUseBlock, Turn
+from neoagent.core.types import ConversationResult, Message, TextBlock, ToolCall, ToolResult, ToolResultBlock, ToolUseBlock, Turn
 from neoagent.providers.base import Provider, Response
 from neoagent.tools.registry import ToolRegistry
 
@@ -31,7 +33,9 @@ class QueryLoop:
                  max_turns: int = 30, context_budget: int = 0, on_turn: Callable[[Turn], None] | None = None,
                  memory_manager: "MemoryManager | None" = None,
                  event_bus: EventBus | None = None,
-                 tool_executor: "ToolExecutor | None" = None):
+                 tool_executor: "ToolExecutor | None" = None,
+                 hook_manager: "HookManager | None" = None,
+                 deferred_registry: "DeferredToolRegistry | None" = None):
         self._provider = provider
         self._registry = tool_registry
         self._executor = tool_executor
@@ -42,6 +46,8 @@ class QueryLoop:
         self._compressor = ContextCompressor(provider=provider)
         self._memory_manager = memory_manager
         self._bus = event_bus if event_bus is not None else EventBus()
+        self._hook_manager = hook_manager
+        self._deferred_registry = deferred_registry
 
     async def run(
         self,
@@ -77,6 +83,14 @@ class QueryLoop:
             msgs = _session.messages
             session_state = _session.state
 
+        # Propagate session state into ToolSearchTool so promote writes to session scope.
+        # We look up the tool by well-known name to avoid a hard import cycle.
+        if self._deferred_registry and session_state is not None:
+            from neoagent.tools.builtin.tool_search import ToolSearchTool as _TST
+            _ts = self._registry.get_tool("tool_search")
+            if isinstance(_ts, _TST):
+                _ts._session_state = session_state
+
         turns: list[Turn] = []
         for turn_idx in range(self.max_turns):
             schemas = self._registry.get_schemas()
@@ -105,13 +119,84 @@ class QueryLoop:
                         previous_summary=old_summary,
                     ))
             system = self._prompt_builder.build()
+
+            # MCP deferred loading: filter schemas + inject deferred names into system prompt.
+            # A tool managed by the deferred registry is hidden until promoted.
+            # Promotion is tracked at two levels (OR logic for visibility):
+            #   1. Session-scoped: session_state.promoted_tools (preferred, per-session isolation)
+            #   2. Global: DeferredToolRegistry.is_deferred() == False (backward compat)
+            # A tool is visible when EITHER condition indicates it has been promoted.
+            if self._deferred_registry:
+                session_promoted = session_state.promoted_tools if session_state else set()
+
+                def _is_hidden(tool_name: str) -> bool:
+                    if tool_name not in self._deferred_registry._all:
+                        return False  # not a managed deferred tool
+                    # Visible if promoted in this session OR promoted globally
+                    return (
+                        tool_name not in session_promoted
+                        and self._deferred_registry.is_deferred(tool_name)
+                    )
+
+                schemas = [s for s in schemas if not _is_hidden(s["name"])]
+
+                # Show names of all tools that are still deferred in this session
+                deferred_names = sorted(
+                    name for name in self._deferred_registry._all
+                    if _is_hidden(name)
+                )
+                if deferred_names:
+                    deferred_section = (
+                        "\n\n<deferred-tools>\n"
+                        + "\n".join(deferred_names)
+                        + "\n</deferred-tools>"
+                    )
+                    system = system + deferred_section
+
             self._bus.emit(ProviderRequestEvent(
                 system=system, messages=tuple(msgs),
                 tools=tuple(schemas), turn=turn_idx,
             ))
-            response = await self._provider.create(system=system, messages=msgs, tools=schemas, max_tokens=_DEFAULT_MAX_TOKENS)
+
+            # pre_provider_call hook
+            _system, _msgs, _schemas = system, msgs, schemas
+            if self._hook_manager:
+                from neoagent.hooks import PreProviderCallEvent
+                pre_event = PreProviderCallEvent(
+                    system=system, messages=list(msgs), tools=list(schemas)
+                )
+                pre_result = await self._hook_manager.run_pre("pre_provider_call", pre_event)
+                if pre_result.action == "deny":
+                    reason = pre_result.reason or "denied by hook"
+                    denial_msg = f"[Hook denied: {reason}]"
+                    turn = Turn(
+                        response=Message(role="assistant", content=[TextBlock(text=denial_msg)]),
+                        tool_calls=[], tool_results=[], stop_reason="end_turn",
+                    )
+                    turns.append(turn)
+                    if self._on_turn:
+                        self._on_turn(turn)
+                    return ConversationResult(turns=turns, reason="completed")
+                if pre_result.action == "modify" and pre_result.modified_data:
+                    _system = pre_result.modified_data.get("system", system)
+                    _msgs = pre_result.modified_data.get("messages", msgs)
+                    _schemas = pre_result.modified_data.get("tools", schemas)
+
+            response = await self._provider.create(system=_system, messages=_msgs, tools=_schemas, max_tokens=_DEFAULT_MAX_TOKENS)
             if response.stop_reason == "max_tokens":
-                response = await self._retry_with_higher_max(system, msgs, schemas)
+                response = await self._retry_with_higher_max(_system, _msgs, _schemas)
+
+            # post_provider_call hook (after potential retry)
+            if self._hook_manager and response.stop_reason != "max_tokens":
+                from neoagent.hooks import PostProviderCallEvent
+                post_event = PostProviderCallEvent(
+                    response=response,
+                    input_tokens=response.input_tokens,
+                    output_tokens=response.output_tokens,
+                )
+                post_result = await self._hook_manager.run_post("post_provider_call", post_event)
+                if post_result.action == "modify" and post_result.modified_data:
+                    response = post_result.modified_data.get("response", response)
             if response.stop_reason == "max_tokens":
                 # Still truncated after retry — treat as end_turn to avoid corrupt tool calls
                 turn = Turn(

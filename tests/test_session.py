@@ -152,3 +152,88 @@ def test_session_to_dict_is_json_serializable():
     s.messages.append(Message(role="assistant", content="ok"))
     d = _session_to_dict(s)
     json.dumps(d)
+
+
+# ── SessionState.promoted_tools (Fix 6: session-level deferred promote) ───────
+
+def test_session_state_promoted_tools_default_empty():
+    """promoted_tools must default to an empty set."""
+    state = SessionState()
+    assert isinstance(state.promoted_tools, set)
+    assert len(state.promoted_tools) == 0
+
+
+def test_session_state_promoted_tools_independent_per_instance():
+    """Each SessionState must have its own promoted_tools set (not shared)."""
+    s1 = SessionState()
+    s2 = SessionState()
+    s1.promoted_tools.add("github__create_issue")
+    assert "github__create_issue" not in s2.promoted_tools
+
+
+def test_session_fork_independent_promoted_tools():
+    """Forked session must have an independent copy of promoted_tools."""
+    s = Session.create()
+    s.state.promoted_tools.add("github__create_issue")
+    forked = s.fork()
+    forked.state.promoted_tools.add("filesystem__read_file")
+    # Original must not see changes from fork
+    assert "filesystem__read_file" not in s.state.promoted_tools
+    # Fork must have original's promoted tools
+    assert "github__create_issue" in forked.state.promoted_tools
+
+
+def test_two_sessions_have_independent_promote_state():
+    """Two sessions sharing a DeferredToolRegistry must have independent promote sets."""
+    from neoagent.tools.deferred import DeferredToolRegistry
+    deferred = DeferredToolRegistry()
+    deferred.register("github__create_issue", "Create issue")
+
+    session_a = Session.create()
+    session_b = Session.create()
+
+    # Session A promotes the tool
+    session_a.state.promoted_tools.add("github__create_issue")
+
+    # Session B must NOT see Session A's promote
+    assert "github__create_issue" not in session_b.state.promoted_tools
+
+    # Verify global registry is still consistent
+    assert deferred.is_deferred("github__create_issue")
+
+
+def test_session_promoted_tools_serialized_and_deserialized():
+    """promoted_tools must survive a save/load round-trip."""
+    s = Session.create(session_id="promote-rt")
+    s.state.promoted_tools = {"github__create_issue", "filesystem__read_file"}
+    d = _session_to_dict(s)
+    s2 = _session_from_dict(d)
+    assert s2.state.promoted_tools == {"github__create_issue", "filesystem__read_file"}
+
+
+def test_session_promoted_tools_empty_serializes_as_empty_list():
+    """Empty promoted_tools serializes as [] in the dict."""
+    s = Session.create(session_id="empty-pt")
+    d = _session_to_dict(s)
+    assert d["state"]["promoted_tools"] == []
+
+
+def test_session_promoted_tools_deserialized_missing_key_defaults_to_empty():
+    """If promoted_tools is missing from stored dict (old format), defaults to empty."""
+    d = {
+        "id": "old-session",
+        "created_at": "2026-01-01T00:00:00",
+        "updated_at": "2026-01-01T00:00:00",
+        "state": {
+            "previous_summary": None,
+            "compression_failures": 0,
+            "memory_tool_calls": 0,
+            "memory_token_baseline": 0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            # No "promoted_tools" key — simulates old persisted session
+        },
+        "messages": [],
+    }
+    s = _session_from_dict(d)
+    assert s.state.promoted_tools == set()

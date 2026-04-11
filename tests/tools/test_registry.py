@@ -82,6 +82,46 @@ class TestAllTools:
         assert reg.all_tools() == {}
 
 
+class TestUnregister:
+    def test_unregister_removes_tool(self):
+        """unregister() must remove the named tool so get_tool returns None."""
+        reg = ToolRegistry()
+        reg.register(AddTool())
+        assert reg.get_tool("add") is not None
+        reg.unregister("add")
+        assert reg.get_tool("add") is None
+
+    def test_unregister_nonexistent_is_noop(self):
+        """unregister() on an unknown tool name must not raise."""
+        reg = ToolRegistry()
+        reg.unregister("does_not_exist")  # no error
+
+    def test_unregister_allows_reregistration(self):
+        """After unregister(), the same tool name can be registered again."""
+        reg = ToolRegistry()
+        reg.register(AddTool())
+        reg.unregister("add")
+        reg.register(AddTool())  # must not raise DuplicateError
+        assert reg.get_tool("add") is not None
+
+    def test_unregister_only_removes_named_tool(self):
+        """unregister() must not affect other registered tools."""
+        reg = ToolRegistry()
+        reg.register(AddTool())
+        reg.register(DenyTool())
+        reg.unregister("add")
+        assert reg.get_tool("denied") is not None
+        assert reg.get_tool("add") is None
+
+    def test_unregister_updates_schemas(self):
+        """After unregister(), get_schemas() must not include the removed tool."""
+        reg = ToolRegistry()
+        reg.register(AddTool())
+        reg.unregister("add")
+        schemas = reg.get_schemas()
+        assert all(s["name"] != "add" for s in schemas)
+
+
 # ── Registry purity tests (Task 6) ───────────────────────────────────────────
 
 def test_registry_has_no_execute_method():

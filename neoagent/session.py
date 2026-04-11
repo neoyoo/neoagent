@@ -19,6 +19,9 @@ class SessionState:
     memory_token_baseline: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
+    # Tracks which deferred tools have been promoted in this session.
+    # DeferredToolRegistry holds the global index; this set controls per-session visibility.
+    promoted_tools: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -140,6 +143,7 @@ def _session_to_dict(session: Session) -> dict:
             "memory_token_baseline": session.state.memory_token_baseline,
             "total_input_tokens": session.state.total_input_tokens,
             "total_output_tokens": session.state.total_output_tokens,
+            "promoted_tools": sorted(session.state.promoted_tools),
         },
         "messages": [_message_to_dict(m) for m in session.messages],
     }
@@ -154,6 +158,7 @@ def _session_from_dict(data: dict) -> Session:
         memory_token_baseline=state_d.get("memory_token_baseline", 0),
         total_input_tokens=state_d.get("total_input_tokens", 0),
         total_output_tokens=state_d.get("total_output_tokens", 0),
+        promoted_tools=set(state_d.get("promoted_tools", [])),
     )
     messages = [_message_from_dict(m) for m in data.get("messages", [])]
     return Session(

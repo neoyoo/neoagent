@@ -11,6 +11,7 @@ from neoagent.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
     from neoagent.events import EventBus
+    from neoagent.hooks import HookManager
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +29,13 @@ class ToolExecutor:
         permission_checker: PermissionChecker | None = None,
         max_result_size: int = 50000,
         event_bus: "EventBus | None" = None,
+        hook_manager: "HookManager | None" = None,
     ) -> None:
         self._registry = registry
         self._permission = permission_checker or PermissionChecker()
         self.max_result_size = max_result_size
         self._bus = event_bus
+        self._hook_manager = hook_manager
 
     async def execute(self, calls: list[ToolCall]) -> list[ToolResult]:
         safe, unsafe = self._partition_by_concurrency(calls)
@@ -84,11 +87,62 @@ class ToolExecutor:
                     else f"Permission denied: tool '{tool.name}' requires user approval"
                 )
                 result = ToolResult(call_id=call.id, output=msg, is_error=True)
-            else:
-                result = await tool.execute(validated_input)
-                result.call_id = call.id
-                if len(result.output) > self.max_result_size:
-                    result.output = result.output[:self.max_result_size] + "\n[truncated]"
+                self._emit_result(call, result)
+                return idx, result
+
+            # pre_tool_call hook (runs AFTER permission check)
+            if self._hook_manager:
+                from neoagent.hooks import PreToolCallEvent
+                pre_event = PreToolCallEvent(
+                    tool_name=call.name,
+                    tool_input=dict(call.input),
+                    call_id=call.id,
+                )
+                pre_result = await self._hook_manager.run_pre("pre_tool_call", pre_event)
+                if pre_result.action == "deny":
+                    reason = pre_result.reason or "denied by hook"
+                    result = ToolResult(call_id=call.id, output=f"Hook denied: {reason}", is_error=True)
+                    self._emit_result(call, result)
+                    return idx, result
+                if pre_result.action == "modify" and pre_result.modified_data:
+                    # Apply modified tool_input to call for execution
+                    new_input = pre_result.modified_data.get("tool_input", call.input)
+                    call = ToolCall(id=call.id, name=call.name, input=new_input)
+                    validated_input = tool.input_model.model_validate(call.input)
+                    # Re-run permission check on the modified input — hooks must not
+                    # be able to bypass PermissionChecker by substituting a safe input
+                    # with a dangerous one after the initial check passed.
+                    allowed = await self._permission.check(tool, validated_input)
+                    if not allowed:
+                        msg = (
+                            f"Permission denied: tool '{tool.name}' is disabled"
+                            if tool.permission == "deny"
+                            else f"Permission denied: tool '{tool.name}' requires user approval"
+                        )
+                        result = ToolResult(call_id=call.id, output=msg, is_error=True)
+                        self._emit_result(call, result)
+                        return idx, result
+
+            result = await tool.execute(validated_input)
+            result.call_id = call.id
+            if len(result.output) > self.max_result_size:
+                result.output = result.output[:self.max_result_size] + "\n[truncated]"
+
+            # post_tool_call hook
+            if self._hook_manager:
+                from neoagent.hooks import PostToolCallEvent
+                post_event = PostToolCallEvent(
+                    tool_name=call.name,
+                    tool_input=dict(call.input),
+                    call_id=call.id,
+                    result=result.output,
+                    is_error=result.is_error,
+                )
+                post_result = await self._hook_manager.run_post("post_tool_call", post_event)
+                if post_result.action == "modify" and post_result.modified_data:
+                    new_output = post_result.modified_data.get("result", result.output)
+                    result = ToolResult(call_id=call.id, output=new_output, is_error=result.is_error)
+
         except Exception as e:
             result = ToolResult(call_id=call.id, output=str(e), is_error=True)
 
