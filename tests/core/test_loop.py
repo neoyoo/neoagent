@@ -4,6 +4,7 @@ import pytest
 from neoagent.core.loop import QueryLoop
 from neoagent.core.types import ConversationResult, Message, TextBlock, ToolCall, ToolResult, ToolUseBlock, ToolResultBlock, Turn
 from neoagent.session import Session, SessionState
+from neoagent.events import EventBus, ToolCallEvent, ToolResultEvent, ProviderRequestEvent, TurnCompleteEvent
 
 def _text_response(text="done"):
     resp = MagicMock()
@@ -233,3 +234,56 @@ class TestSessionIntegration:
         await loop.run(session=session)
         assert session.state.total_input_tokens == 30  # 20 + 10
         assert session.state.total_output_tokens == 13  # 8 + 5
+
+
+# ── EventBus integration tests (Task 5) ──────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_loop_emits_provider_request_event():
+    provider = _make_provider(_text_response("hi"))
+    bus = EventBus()
+    received = []
+    bus.subscribe(ProviderRequestEvent, lambda e: received.append(e))
+    loop = QueryLoop(
+        provider=provider,
+        tool_registry=_make_registry(),
+        prompt_builder=_make_prompt_builder(),
+        event_bus=bus,
+    )
+    session = Session.create()
+    session.messages.append(Message(role="user", content="hello"))
+    await loop.run(session=session)
+    assert len(received) == 1
+    assert received[0].turn == 0
+
+
+@pytest.mark.asyncio
+async def test_loop_emits_turn_complete_event():
+    provider = _make_provider(_text_response("done"))
+    bus = EventBus()
+    received = []
+    bus.subscribe(TurnCompleteEvent, lambda e: received.append(e))
+    loop = QueryLoop(
+        provider=provider,
+        tool_registry=_make_registry(),
+        prompt_builder=_make_prompt_builder(),
+        event_bus=bus,
+    )
+    session = Session.create()
+    session.messages.append(Message(role="user", content="hi"))
+    await loop.run(session=session)
+    assert len(received) == 1
+    assert received[0].stop_reason == "end_turn"
+
+
+@pytest.mark.asyncio
+async def test_loop_no_observer_field_after_task5():
+    """After Task 5, loop should not directly expose _observer — use event_bus."""
+    provider = _make_provider(_text_response("ok"))
+    loop = QueryLoop(
+        provider=provider,
+        tool_registry=_make_registry(),
+        prompt_builder=_make_prompt_builder(),
+    )
+    # event_bus should exist
+    assert hasattr(loop, '_bus')

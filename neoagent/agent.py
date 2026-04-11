@@ -3,6 +3,7 @@ from neoagent.config import NeoAgentConfig
 from neoagent.core.loop import QueryLoop
 from neoagent.core.prompt import PromptBuilder, PromptSection
 from neoagent.core.types import ConversationResult, Message, TextBlock
+from neoagent.events import EventBus
 from neoagent.providers.base import Provider
 from neoagent.session import JsonFileStorage, Session, SessionStorage
 from neoagent.tools.base import BaseTool
@@ -31,13 +32,17 @@ class NeoAgent:
             content="You are neoagent, a helpful AI assistant.",
             priority=0, is_static=True,
         ))
+        self._event_bus = EventBus()
         self._loop = QueryLoop(
             provider=self._provider,
             tool_registry=self._registry,
             prompt_builder=self._prompt_builder,
             max_turns=config.max_turns,
             context_budget=config.context_budget,
+            event_bus=self._event_bus,
         )
+        self._observer = None
+        self._observer_subscriber = None
         # Storage: explicit > config.session_dir > None
         if storage is not None:
             self._storage: SessionStorage | None = storage
@@ -45,6 +50,11 @@ class NeoAgent:
             self._storage = JsonFileStorage(config.session_dir)
         else:
             self._storage = None
+
+    @property
+    def event_bus(self) -> EventBus:
+        """Expose EventBus for external subscribers."""
+        return self._event_bus
 
     def register_tool(self, tool: BaseTool) -> None:
         self._registry.register(tool)
@@ -134,21 +144,24 @@ class NeoAgent:
     ) -> "Observer":
         """Enable framework-level logging. Returns the Observer for manual close()."""
         from neoagent.observe import Observer
+        from neoagent.observe_subscriber import ObserverSubscriber
         from pathlib import Path as _Path
 
         # Close existing observer if any to avoid file-handle leaks
-        if hasattr(self._loop, '_observer') and self._loop._observer:
-            self._loop._observer.close()
+        if self._observer:
+            self._observer.close()
 
         if log_dir is None:
             log_dir = _Path.cwd() / "logs"
 
         observer = Observer(log_dir=log_dir, console=console)
-        self._loop._observer = observer
+        self._observer_subscriber = ObserverSubscriber(observer, self._event_bus)
+        self._observer = observer
         return observer
 
     def disable_logging(self) -> None:
         """Disable logging and close any open log files."""
-        if self._loop._observer:
-            self._loop._observer.close()
-            self._loop._observer = None
+        if self._observer:
+            self._observer.close()
+            self._observer = None
+            self._observer_subscriber = None
