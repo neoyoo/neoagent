@@ -52,7 +52,6 @@ class ContextCompressor:
     def __init__(self, provider: "Provider", max_failures: int = 3) -> None:
         self._provider = provider
         self._max_failures = max_failures
-        self._consecutive_failures: int = 0
 
     def estimate_tokens(self, messages: list[Message]) -> int:
         total = 0
@@ -76,14 +75,17 @@ class ContextCompressor:
     ) -> list[Message]:
         if len(messages) <= 1:
             return messages
-        if self._consecutive_failures >= self._max_failures:
+        failures = session_state.compression_failures if session_state else 0
+        if failures >= self._max_failures:
             return self._truncate_oldest(messages)
         try:
             compressed = await self._llm_compress(messages, session_state=session_state)
-            self._consecutive_failures = 0
+            if session_state:
+                session_state.compression_failures = 0
             return compressed
         except Exception:
-            self._consecutive_failures += 1
+            if session_state:
+                session_state.compression_failures += 1
             return self._truncate_oldest(messages)
 
     async def _llm_compress(

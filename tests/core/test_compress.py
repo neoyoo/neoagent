@@ -124,39 +124,44 @@ class TestCompress:
         assert "CONTEXT_SUMMARY" in all_text
 
     async def test_success_resets_failures(self):
+        from neoagent.session import SessionState
         c = ContextCompressor(provider=_make_provider("ok"))
-        c._consecutive_failures = 2
+        state = SessionState(compression_failures=2)
         msgs = [_user("a")] + [_user(f"b{i}") for i in range(4)]
-        await c.compress(msgs, context_budget=200_000)
-        assert c._consecutive_failures == 0
+        await c.compress(msgs, context_budget=200_000, session_state=state)
+        assert state.compression_failures == 0
 
 class TestCircuitBreaker:
     async def test_failure_increments(self):
+        from neoagent.session import SessionState
         p = MagicMock()
         p.create = AsyncMock(side_effect=RuntimeError("down"))
         c = ContextCompressor(provider=p, max_failures=3)
+        state = SessionState()
         msgs = [_user("a")] + [_user(f"b{i}") for i in range(4)]
-        await c.compress(msgs, context_budget=200_000)
-        assert c._consecutive_failures == 1
+        await c.compress(msgs, context_budget=200_000, session_state=state)
+        assert state.compression_failures == 1
 
     async def test_breaker_open_skips_provider(self):
+        from neoagent.session import SessionState
         p = MagicMock()
         p.create = AsyncMock(side_effect=RuntimeError("down"))
         c = ContextCompressor(provider=p, max_failures=3)
-        c._consecutive_failures = 3
+        state = SessionState(compression_failures=3)
         msgs = [_user("first")] + [_user(f"x{i}") for i in range(10)]
-        result = await c.compress(msgs, context_budget=200_000)
+        result = await c.compress(msgs, context_budget=200_000, session_state=state)
         p.create.assert_not_called()
         assert isinstance(result, list) and len(result) > 0
 
     async def test_fallback_preserves_first(self):
+        from neoagent.session import SessionState
         p = MagicMock()
         p.create = AsyncMock(side_effect=RuntimeError("dead"))
         c = ContextCompressor(provider=p, max_failures=1)
-        c._consecutive_failures = 1
+        state = SessionState(compression_failures=1)
         first = _user("anchor")
         msgs = [first] + [_user(f"x{i}") for i in range(20)]
-        result = await c.compress(msgs, context_budget=200_000)
+        result = await c.compress(msgs, context_budget=200_000, session_state=state)
         assert result[0].content == "anchor"
 
 

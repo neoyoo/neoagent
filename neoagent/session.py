@@ -14,6 +14,7 @@ from neoagent.core.types import Message, TextBlock, ToolUseBlock, ToolResultBloc
 class SessionState:
     """Session 内所有跨轮次共享的可变状态。与 Session 一起持久化。"""
     previous_summary: str | None = None
+    compression_failures: int = 0
     memory_tool_calls: int = 0
     memory_token_baseline: int = 0
     total_input_tokens: int = 0
@@ -51,7 +52,7 @@ class Session:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         return Session(
             id=new_id or str(uuid.uuid4()),
-            messages=list(self.messages),
+            messages=copy.deepcopy(self.messages),
             state=copy.deepcopy(self.state),
             created_at=now,
             updated_at=now,
@@ -72,7 +73,10 @@ class JsonFileStorage:
         base_dir.mkdir(parents=True, exist_ok=True)
 
     def _path(self, session_id: str) -> Path:
-        return self._base_dir / f"{session_id}.json"
+        path = (self._base_dir / f"{session_id}.json").resolve()
+        if not path.is_relative_to(self._base_dir.resolve()):
+            raise ValueError(f"Invalid session id: {session_id!r}")
+        return path
 
     def save(self, session: Session) -> None:
         data = _session_to_dict(session)
@@ -131,6 +135,7 @@ def _session_to_dict(session: Session) -> dict:
         "updated_at": session.updated_at.isoformat(),
         "state": {
             "previous_summary": session.state.previous_summary,
+            "compression_failures": session.state.compression_failures,
             "memory_tool_calls": session.state.memory_tool_calls,
             "memory_token_baseline": session.state.memory_token_baseline,
             "total_input_tokens": session.state.total_input_tokens,
@@ -144,6 +149,7 @@ def _session_from_dict(data: dict) -> Session:
     state_d = data.get("state", {})
     state = SessionState(
         previous_summary=state_d.get("previous_summary"),
+        compression_failures=state_d.get("compression_failures", 0),
         memory_tool_calls=state_d.get("memory_tool_calls", 0),
         memory_token_baseline=state_d.get("memory_token_baseline", 0),
         total_input_tokens=state_d.get("total_input_tokens", 0),
