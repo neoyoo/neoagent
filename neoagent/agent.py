@@ -4,6 +4,7 @@ from neoagent.core.loop import QueryLoop
 from neoagent.core.prompt import PromptBuilder, PromptSection
 from neoagent.core.types import ConversationResult, Message, TextBlock
 from neoagent.providers.base import Provider
+from neoagent.session import JsonFileStorage, Session, SessionStorage
 from neoagent.tools.base import BaseTool
 from neoagent.tools.permission import PermissionChecker
 from neoagent.tools.registry import ToolRegistry
@@ -19,7 +20,7 @@ def _create_provider(config: NeoAgentConfig) -> Provider:
 
 
 class NeoAgent:
-    def __init__(self, config: NeoAgentConfig) -> None:
+    def __init__(self, config: NeoAgentConfig, storage: SessionStorage | None = None) -> None:
         self._config = config
         self._provider = _create_provider(config)
         self._permission = PermissionChecker(auto_approve=config.auto_approve_tools)
@@ -37,13 +38,47 @@ class NeoAgent:
             max_turns=config.max_turns,
             context_budget=config.context_budget,
         )
+        # Storage: explicit > config.session_dir > None
+        if storage is not None:
+            self._storage: SessionStorage | None = storage
+        elif config.session_dir is not None:
+            self._storage = JsonFileStorage(config.session_dir)
+        else:
+            self._storage = None
 
     def register_tool(self, tool: BaseTool) -> None:
         self._registry.register(tool)
 
-    async def chat(self, message: str) -> str:
-        messages = [Message(role="user", content=message)]
-        result = await self._loop.run(messages)
+    def new_session(self, session_id: str | None = None) -> Session:
+        """Create a new empty session."""
+        return Session.create(session_id)
+
+    def resume(self, session_id: str) -> Session:
+        """Load an existing session from storage.
+
+        Raises RuntimeError if no SessionStorage is configured.
+        Raises KeyError if the session_id is not found.
+        """
+        if self._storage is None:
+            raise RuntimeError("No SessionStorage configured. Pass storage= to NeoAgent.")
+        return Session.resume(session_id, self._storage)
+
+    async def chat(self, message: str, session: Session | None = None) -> str:
+        """Send a message and return the assistant's reply as a string.
+
+        If session=None (default), a temporary session is created and discarded
+        after the call (backward-compatible behaviour, no persistence).
+
+        If session is provided, the user message is appended to it, the loop runs,
+        and (if storage is configured) the session is auto-saved afterwards.
+        """
+        _temp = session is None
+        if _temp:
+            session = Session.create()
+        session.messages.append(Message(role="user", content=message))
+        result = await self._loop.run(session=session)
+        if not _temp and self._storage is not None:
+            session.save(self._storage)
         if result.turns:
             last = result.turns[-1].response
             if isinstance(last.content, list):
@@ -51,8 +86,19 @@ class NeoAgent:
             return last.content if isinstance(last.content, str) else ""
         return ""
 
-    async def run(self, messages: list[Message]) -> ConversationResult:
-        return await self._loop.run(messages)
+    async def run(self, messages: list[Message], session: Session | None = None) -> ConversationResult:
+        """Low-level interface: run the loop against a message list.
+
+        If session is provided, its messages are ignored in favour of the
+        explicit messages list (the list is set as the session's messages).
+        If session is None, a transient session is created for this call.
+        """
+        if session is None:
+            session = Session.create()
+            session.messages = list(messages)
+        else:
+            session.messages = list(messages)
+        return await self._loop.run(session=session)
 
     def enable_memory(
         self,

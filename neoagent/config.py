@@ -15,3 +15,4 @@ class NeoAgentConfig:
     auto_approve_tools: bool = False
     memory_dir: Path | None = None
     memory_project_key: str | None = None
+    session_dir: Path | None = None
