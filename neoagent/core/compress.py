@@ -11,13 +11,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _KEEP_RECENT = 6
 _ENCODING = tiktoken.get_encoding("cl100k_base")
-_SUMMARIZE_SYSTEM = (
-    "You are a context compression assistant. "
-    "Summarize the following conversation history concisely, "
-    "preserving all key facts, decisions, tool outputs, and context "
-    "that would be needed to continue the conversation seamlessly. "
-    "Output only the summary."
-)
+_SUMMARIZE_SYSTEM_TEMPLATE = """\
+You are a context compression assistant. Compress the conversation below using this structure:
+
+GOAL: <the original task or conversation goal — preserve from previous summary if provided>
+PROGRESS: <what has been accomplished>
+DECISIONS: <key decisions made>
+FILES: <files created or modified, if any>
+NEXT STEPS: <what still needs to happen>
+KEY CONTEXT: <other important facts>
+
+{previous_section}Output only the structured summary. No explanation."""
+
+
+def _build_summarize_system(previous_summary: str | None) -> str:
+    if previous_summary:
+        prev = f"Previous summary (update incrementally — do not discard):\n{previous_summary}\n\n"
+    else:
+        prev = ""
+    return _SUMMARIZE_SYSTEM_TEMPLATE.format(previous_section=prev)
 
 def _message_to_text(msg: Message) -> str:
     if isinstance(msg.content, str):
@@ -37,6 +49,12 @@ class ContextCompressor:
         self._provider = provider
         self._max_failures = max_failures
         self._consecutive_failures: int = 0
+        self._previous_summary: str | None = None
+
+    def reset_session_state(self) -> None:
+        """Clear iterative summary state. Call when starting a new task/session."""
+        self._previous_summary = None
+        self._consecutive_failures = 0
 
     def estimate_tokens(self, messages: list[Message]) -> int:
         total = 0
@@ -77,11 +95,12 @@ class ContextCompressor:
             recent = [messages[-1]]
         middle_text = "\n".join(_message_to_text(m) for m in middle)
         response = await self._provider.create(
-            system=_SUMMARIZE_SYSTEM,
+            system=_build_summarize_system(self._previous_summary),
             messages=[Message(role="user", content=middle_text)],
             tools=[],
         )
         summary = response.text_content.strip() or "(no summary)"
+        self._previous_summary = summary
         summary_msg = Message(role="user", content=f"[Context summary from earlier in the conversation]\n{summary}")
         return self._sanitize_tool_pairs([anchor, summary_msg, *recent])
 

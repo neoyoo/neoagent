@@ -157,3 +157,58 @@ class TestCircuitBreaker:
         msgs = [first] + [_user(f"x{i}") for i in range(20)]
         result = await c.compress(msgs, context_budget=200_000)
         assert result[0].content == "anchor"
+
+
+def _make_messages(n: int) -> list[Message]:
+    return [
+        Message(role="user" if i % 2 == 0 else "assistant", content=f"message {i}")
+        for i in range(n)
+    ]
+
+
+# --- v2 iterative summary tests ---
+
+@pytest.mark.asyncio
+async def test_iterative_summary_passes_previous_to_llm() -> None:
+    """_previous_summary must appear in the LLM system prompt on compression."""
+    provider = _make_provider("GOAL: original goal\nPROGRESS: done step 1")
+    compressor = ContextCompressor(provider=provider)
+    compressor._previous_summary = "GOAL: original goal\nPROGRESS: nothing yet"
+    msgs = _make_messages(10)
+    await compressor.compress(msgs, context_budget=1000)
+    call_args = provider.create.call_args
+    system_text = call_args.kwargs.get("system", "")
+    assert "GOAL: original goal" in system_text
+
+
+@pytest.mark.asyncio
+async def test_iterative_summary_updates_previous_summary() -> None:
+    """After compression, _previous_summary is updated to the new summary."""
+    new_summary = "GOAL: build agent\nPROGRESS: completed v1"
+    provider = _make_provider(new_summary)
+    compressor = ContextCompressor(provider=provider)
+    assert compressor._previous_summary is None
+    msgs = _make_messages(10)
+    await compressor.compress(msgs, context_budget=1000)
+    assert compressor._previous_summary == new_summary
+
+
+def test_reset_session_state_clears_previous_summary() -> None:
+    provider = _make_provider("summary text")
+    compressor = ContextCompressor(provider=provider)
+    compressor._previous_summary = "old summary"
+    compressor.reset_session_state()
+    assert compressor._previous_summary is None
+
+
+@pytest.mark.asyncio
+async def test_structured_template_keywords_in_system_prompt() -> None:
+    """The compression system prompt must include structured template keywords."""
+    provider = _make_provider("GOAL: x\nPROGRESS: y")
+    compressor = ContextCompressor(provider=provider)
+    msgs = _make_messages(10)
+    await compressor.compress(msgs, context_budget=1000)
+    call_args = provider.create.call_args
+    system_text = call_args.kwargs.get("system", "")
+    for keyword in ("GOAL", "PROGRESS", "DECISIONS"):
+        assert keyword in system_text, f"Missing keyword {keyword!r} in system prompt"
