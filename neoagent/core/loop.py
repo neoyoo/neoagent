@@ -6,6 +6,7 @@ from neoagent.core.compress import ContextCompressor
 if TYPE_CHECKING:
     from neoagent.memory.manager import MemoryManager
     from neoagent.observe import Observer
+    from neoagent.session import Session, SessionState
 
 from neoagent.core.prompt import PromptBuilder
 from neoagent.core.types import ConversationResult, Message, ToolCall, ToolResult, ToolResultBlock, ToolUseBlock, Turn
@@ -31,8 +32,40 @@ class QueryLoop:
         self._memory_manager = memory_manager
         self._observer = observer
 
-    async def run(self, messages: list[Message]) -> ConversationResult:
-        msgs = list(messages)
+    async def run(
+        self,
+        messages: "list[Message] | Session | None" = None,
+        *,
+        session: "Session | None" = None,
+    ) -> ConversationResult:
+        """Run the query loop.
+
+        Accepts either:
+          - run(session=session)  — preferred Session-based API
+          - run([Message(...)])   — legacy list-based API (for backward compat while agent.py is updated)
+        """
+        from neoagent.session import Session as _Session
+
+        # Resolve session and msgs
+        if session is not None:
+            # Preferred: session passed as keyword arg
+            _session: _Session = session
+            msgs = _session.messages
+            session_state: "SessionState | None" = _session.state
+        elif isinstance(messages, _Session):
+            # session passed positionally
+            _session = messages
+            msgs = _session.messages
+            session_state = _session.state
+        else:
+            # Legacy list[Message] path — create a transient session for state
+            from neoagent.session import Session as _S
+            _session = _S.create()
+            if messages:
+                _session.messages.extend(messages)
+            msgs = _session.messages
+            session_state = _session.state
+
         turns: list[Turn] = []
         for turn_idx in range(self.max_turns):
             schemas = self._registry.get_schemas()
@@ -42,10 +75,14 @@ class QueryLoop:
                 tool_tokens = self._compressor.estimate_tools_tokens(schemas)
                 self._observer.on_compress_check(msg_tokens, tool_tokens, self.context_budget, should_compress)
             if should_compress:
-                old_summary = self._compressor._previous_summary
-                msgs = await self._compressor.compress(msgs, self.context_budget)
-                if self._observer and self._compressor._previous_summary:
-                    self._observer.on_compress_done(self._compressor._previous_summary, old_summary)
+                old_summary = session_state.previous_summary if session_state else None
+                compressed = await self._compressor.compress(msgs, self.context_budget, session_state=session_state)
+                # Sync back: replace session messages with compressed list
+                _session.messages.clear()
+                _session.messages.extend(compressed)
+                msgs = _session.messages
+                if self._observer and session_state and session_state.previous_summary:
+                    self._observer.on_compress_done(session_state.previous_summary, old_summary)
             system = self._prompt_builder.build()
             if self._observer:
                 self._observer.on_provider_request(system, msgs, schemas, turn=turn_idx)
@@ -59,6 +96,9 @@ class QueryLoop:
                     tool_calls=[], tool_results=[], stop_reason="max_tokens",
                 )
                 turns.append(turn)
+                if session_state:
+                    session_state.total_input_tokens += response.input_tokens
+                    session_state.total_output_tokens += response.output_tokens
                 if self._on_turn:
                     self._on_turn(turn)
                 return ConversationResult(turns=turns, reason="completed")
@@ -67,6 +107,9 @@ class QueryLoop:
                     response.content, response.stop_reason,
                     response.input_tokens, response.output_tokens, turn=turn_idx,
                 )
+            if session_state:
+                session_state.total_input_tokens += response.input_tokens
+                session_state.total_output_tokens += response.output_tokens
             tool_calls = [ToolCall(id=b.id, name=b.name, input=b.input) for b in response.tool_use_blocks]
             if response.stop_reason == "end_turn" or not tool_calls:
                 turn = Turn(response=Message(role="assistant", content=response.content), tool_calls=[], tool_results=[], stop_reason="end_turn")
@@ -75,7 +118,7 @@ class QueryLoop:
                     self._on_turn(turn)
                 if self._memory_manager:
                     current_tokens = self._compressor.estimate_tokens(msgs)
-                    await self._memory_manager.maybe_extract(msgs, current_tokens)
+                    await self._memory_manager.maybe_extract(msgs, current_tokens, session_state=session_state)
                 return ConversationResult(turns=turns, reason="completed")
             if self._observer:
                 for tc in tool_calls:
@@ -85,7 +128,7 @@ class QueryLoop:
                 for tc, r in zip(tool_calls, results):
                     self._observer.on_tool_result(tc.name, r.output[:300], r.is_error)
             if self._memory_manager:
-                self._memory_manager.record_tool_calls(len(tool_calls))
+                self._memory_manager.record_tool_calls(len(tool_calls), session_state=session_state)
             assistant_msg = Message(role="assistant", content=response.content)
             msgs.append(assistant_msg)
             result_msg = Message(role="user", content=[ToolResultBlock(tool_use_id=r.call_id, content=r.output, is_error=r.is_error) for r in results])

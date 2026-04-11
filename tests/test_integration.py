@@ -13,6 +13,7 @@ from neoagent.core.compress import ContextCompressor
 from neoagent.tools.base import BaseTool
 from neoagent.tools.registry import ToolRegistry
 from neoagent.providers.base import Provider, Response
+from neoagent.session import Session
 
 
 # --- MockProvider ---
@@ -48,6 +49,12 @@ def _tool_use_resp(tool_id: str, tool_name: str, tool_input: dict) -> Response:
     )
 
 
+def _make_session(content: str) -> Session:
+    s = Session.create()
+    s.messages.append(Message(role="user", content=content))
+    return s
+
+
 # --- EchoTool for testing ---
 
 class EchoInput(BaseModel):
@@ -75,7 +82,7 @@ class TestSimpleConversation:
         builder.add_section(PromptSection(name="sys", content="You are helpful.", priority=0))
         loop = QueryLoop(provider=provider, tool_registry=registry, prompt_builder=builder)
 
-        result = await loop.run([Message(role="user", content="Hi")])
+        result = await loop.run(session=_make_session("Hi"))
 
         assert isinstance(result, ConversationResult)
         assert result.reason == "completed"
@@ -90,7 +97,7 @@ class TestSimpleConversation:
         builder.add_section(PromptSection(name="identity", content="I am neoagent.", priority=0, is_static=True))
         builder.add_section(PromptSection(name="rules", content="Be concise.", priority=1, is_static=True))
         loop = QueryLoop(provider=provider, tool_registry=ToolRegistry(), prompt_builder=builder)
-        await loop.run([Message(role="user", content="go")])
+        await loop.run(session=_make_session("go"))
         system = provider.calls[0]["system"]
         assert "# identity" in system
         assert "# rules" in system
@@ -117,7 +124,7 @@ class TestToolCallFlow:
         builder.add_section(PromptSection(name="sys", content="Help.", priority=0))
         loop = QueryLoop(provider=provider, tool_registry=registry, prompt_builder=builder)
 
-        result = await loop.run([Message(role="user", content="read the file")])
+        result = await loop.run(session=_make_session("read the file"))
 
         assert result.reason == "completed"
         assert len(result.turns) == 2
@@ -138,7 +145,7 @@ class TestToolCallFlow:
         builder = PromptBuilder()
         builder.add_section(PromptSection(name="sys", content="x", priority=0))
         loop = QueryLoop(provider=provider, tool_registry=registry, prompt_builder=builder)
-        await loop.run([Message(role="user", content="echo hello")])
+        await loop.run(session=_make_session("echo hello"))
 
         # Second call should have tool_result in messages
         second_msgs = provider.calls[1]["messages"]
@@ -161,7 +168,7 @@ class TestMaxTurns:
         builder.add_section(PromptSection(name="sys", content="x", priority=0))
         loop = QueryLoop(provider=provider, tool_registry=registry, prompt_builder=builder, max_turns=3)
 
-        result = await loop.run([Message(role="user", content="go")])
+        result = await loop.run(session=_make_session("go"))
 
         assert result.reason == "max_turns"
         assert len(result.turns) == 3

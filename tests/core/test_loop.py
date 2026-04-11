@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from neoagent.core.loop import QueryLoop
 from neoagent.core.types import ConversationResult, Message, TextBlock, ToolCall, ToolResult, ToolUseBlock, ToolResultBlock, Turn
+from neoagent.session import Session, SessionState
 
 def _text_response(text="done"):
     resp = MagicMock()
@@ -10,6 +11,8 @@ def _text_response(text="done"):
     resp.content = [TextBlock(text=text)]
     resp.text_content = text
     resp.tool_use_blocks = []
+    resp.input_tokens = 10
+    resp.output_tokens = 5
     return resp
 
 def _tool_use_response(tool_id, tool_name, tool_input):
@@ -19,6 +22,8 @@ def _tool_use_response(tool_id, tool_name, tool_input):
     resp.content = [tu]
     resp.text_content = ""
     resp.tool_use_blocks = [tu]
+    resp.input_tokens = 20
+    resp.output_tokens = 8
     return resp
 
 def _max_tokens_response():
@@ -27,6 +32,8 @@ def _max_tokens_response():
     resp.content = []
     resp.text_content = ""
     resp.tool_use_blocks = []
+    resp.input_tokens = 5
+    resp.output_tokens = 0
     return resp
 
 def _make_provider(*responses):
@@ -46,6 +53,12 @@ def _make_prompt_builder(text="You are neoagent."):
     b.build.return_value = text
     return b
 
+def _session_with(content: str) -> Session:
+    """Create a fresh Session with a single user message."""
+    s = Session.create()
+    s.messages.append(Message(role="user", content=content))
+    return s
+
 class TestConstruction:
     def test_default_budget_from_provider(self):
         loop = QueryLoop(provider=_make_provider(), tool_registry=_make_registry(), prompt_builder=_make_prompt_builder())
@@ -63,7 +76,7 @@ class TestNormalCompletion:
     async def test_single_turn(self):
         p = _make_provider(_text_response("All done."))
         loop = QueryLoop(provider=p, tool_registry=_make_registry(), prompt_builder=_make_prompt_builder())
-        result = await loop.run([Message(role="user", content="Hello")])
+        result = await loop.run(session=_session_with("Hello"))
         assert result.reason == "completed"
         assert len(result.turns) == 1
         assert result.turns[0].stop_reason == "end_turn"
@@ -71,7 +84,7 @@ class TestNormalCompletion:
     async def test_system_prompt_passed(self):
         p = _make_provider(_text_response())
         loop = QueryLoop(provider=p, tool_registry=_make_registry(), prompt_builder=_make_prompt_builder("SYS"))
-        await loop.run([Message(role="user", content="go")])
+        await loop.run(session=_session_with("go"))
         assert p.create.call_args.kwargs["system"] == "SYS"
 
     async def test_tools_passed(self):
@@ -79,7 +92,7 @@ class TestNormalCompletion:
         reg = _make_registry()
         reg.get_schemas.return_value = [{"name": "read"}]
         loop = QueryLoop(provider=p, tool_registry=reg, prompt_builder=_make_prompt_builder())
-        await loop.run([Message(role="user", content="go")])
+        await loop.run(session=_session_with("go"))
         assert p.create.call_args.kwargs["tools"] == [{"name": "read"}]
 
 class TestMaxTurns:
@@ -88,7 +101,7 @@ class TestMaxTurns:
         p = _make_provider(*resps)
         reg = _make_registry([ToolResult(call_id="x", output="ok")])
         loop = QueryLoop(provider=p, tool_registry=reg, prompt_builder=_make_prompt_builder(), max_turns=3)
-        result = await loop.run([Message(role="user", content="go")])
+        result = await loop.run(session=_session_with("go"))
         assert result.reason == "max_turns"
         assert len(result.turns) == 3
 
@@ -97,7 +110,7 @@ class TestMaxTurns:
         p = _make_provider(*resps)
         reg = _make_registry([ToolResult(call_id="x", output="ok")])
         loop = QueryLoop(provider=p, tool_registry=reg, prompt_builder=_make_prompt_builder(), max_turns=3)
-        await loop.run([Message(role="user", content="go")])
+        await loop.run(session=_session_with("go"))
         assert p.create.call_count == 3
 
 class TestToolFlow:
@@ -105,7 +118,7 @@ class TestToolFlow:
         p = _make_provider(_tool_use_response("t1", "read", {"path": "/f"}), _text_response("done"))
         reg = _make_registry([ToolResult(call_id="t1", output="contents")])
         loop = QueryLoop(provider=p, tool_registry=reg, prompt_builder=_make_prompt_builder())
-        result = await loop.run([Message(role="user", content="read")])
+        result = await loop.run(session=_session_with("read"))
         assert result.reason == "completed"
         assert len(result.turns) == 2
         assert result.turns[0].stop_reason == "tool_use"
@@ -115,7 +128,7 @@ class TestToolFlow:
         p = _make_provider(_tool_use_response("t1", "grep", {"p": "TODO"}), _text_response("done"))
         reg = _make_registry([ToolResult(call_id="t1", output="found")])
         loop = QueryLoop(provider=p, tool_registry=reg, prompt_builder=_make_prompt_builder())
-        await loop.run([Message(role="user", content="search")])
+        await loop.run(session=_session_with("search"))
         reg.execute.assert_called_once()
         assert reg.execute.call_args.args[0][0].name == "grep"
 
@@ -123,7 +136,7 @@ class TestToolFlow:
         p = _make_provider(_tool_use_response("t1", "bash", {}), _text_response("done"))
         reg = _make_registry([ToolResult(call_id="t1", output="output")])
         loop = QueryLoop(provider=p, tool_registry=reg, prompt_builder=_make_prompt_builder())
-        await loop.run([Message(role="user", content="go")])
+        await loop.run(session=_session_with("go"))
         second_msgs = p.create.call_args_list[1].kwargs["messages"]
         last = second_msgs[-1]
         assert last.role == "user"
@@ -136,7 +149,7 @@ class TestOnTurn:
         reg = _make_registry([ToolResult(call_id="t1", output="ok")])
         calls = []
         loop = QueryLoop(provider=p, tool_registry=reg, prompt_builder=_make_prompt_builder(), on_turn=calls.append)
-        await loop.run([Message(role="user", content="go")])
+        await loop.run(session=_session_with("go"))
         assert len(calls) == 2
         assert calls[0].stop_reason == "tool_use"
         assert calls[1].stop_reason == "end_turn"
@@ -144,13 +157,79 @@ class TestOnTurn:
     async def test_none_callback_ok(self):
         p = _make_provider(_text_response())
         loop = QueryLoop(provider=p, tool_registry=_make_registry(), prompt_builder=_make_prompt_builder())
-        result = await loop.run([Message(role="user", content="hi")])
+        result = await loop.run(session=_session_with("hi"))
         assert result.reason == "completed"
 
 class TestMaxTokensRetry:
     async def test_retries(self):
         p = _make_provider(_max_tokens_response(), _text_response("ok"))
         loop = QueryLoop(provider=p, tool_registry=_make_registry(), prompt_builder=_make_prompt_builder())
-        result = await loop.run([Message(role="user", content="go")])
+        result = await loop.run(session=_session_with("go"))
         assert p.create.call_count == 2
         assert result.reason == "completed"
+
+class TestLegacyListAPI:
+    """Backward-compat: loop.run([Message(...)]) must still work while agent.py is updated."""
+
+    async def test_list_messages_still_works(self):
+        p = _make_provider(_text_response("ok"))
+        loop = QueryLoop(provider=p, tool_registry=_make_registry(), prompt_builder=_make_prompt_builder())
+        result = await loop.run([Message(role="user", content="legacy")])
+        assert result.reason == "completed"
+
+    async def test_list_messages_tool_flow(self):
+        p = _make_provider(_tool_use_response("t1", "bash", {}), _text_response("done"))
+        reg = _make_registry([ToolResult(call_id="t1", output="ok")])
+        loop = QueryLoop(provider=p, tool_registry=reg, prompt_builder=_make_prompt_builder())
+        result = await loop.run([Message(role="user", content="go")])
+        assert result.reason == "completed"
+        assert len(result.turns) == 2
+
+
+# --- NEW: Session integration tests ---
+
+class TestSessionIntegration:
+    async def test_run_accepts_session(self):
+        """loop.run(session=...) must accept a Session and complete normally."""
+        p = _make_provider(_text_response("hi"))
+        loop = QueryLoop(provider=p, tool_registry=_make_registry(), prompt_builder=_make_prompt_builder())
+        session = Session.create()
+        session.messages.append(Message(role="user", content="hello"))
+        result = await loop.run(session=session)
+        assert result.reason == "completed"
+
+    async def test_run_accumulates_tokens_in_session_state(self):
+        """Token counts must be accumulated in session.state after run."""
+        p = _make_provider(_text_response("done"))
+        loop = QueryLoop(provider=p, tool_registry=_make_registry(), prompt_builder=_make_prompt_builder())
+        session = Session.create()
+        session.messages.append(Message(role="user", content="hi"))
+        await loop.run(session=session)
+        assert session.state.total_input_tokens > 0
+        assert session.state.total_output_tokens > 0
+
+    async def test_run_messages_appended_to_session(self):
+        """Assistant and tool result messages must be appended to session.messages."""
+        p = _make_provider(_tool_use_response("t1", "bash", {}), _text_response("done"))
+        reg = _make_registry([ToolResult(call_id="t1", output="output")])
+        loop = QueryLoop(provider=p, tool_registry=reg, prompt_builder=_make_prompt_builder())
+        session = Session.create()
+        session.messages.append(Message(role="user", content="go"))
+        initial_count = len(session.messages)
+        await loop.run(session=session)
+        # At least assistant + tool_result + final assistant messages added
+        assert len(session.messages) > initial_count
+
+    async def test_token_accumulation_multi_turn(self):
+        """Tokens from multiple turns are summed correctly in session state."""
+        p = _make_provider(
+            _tool_use_response("t1", "bash", {}),  # turn 1: input=20, output=8
+            _text_response("done"),                  # turn 2: input=10, output=5
+        )
+        reg = _make_registry([ToolResult(call_id="t1", output="ok")])
+        loop = QueryLoop(provider=p, tool_registry=reg, prompt_builder=_make_prompt_builder())
+        session = Session.create()
+        session.messages.append(Message(role="user", content="go"))
+        await loop.run(session=session)
+        assert session.state.total_input_tokens == 30  # 20 + 10
+        assert session.state.total_output_tokens == 13  # 8 + 5
