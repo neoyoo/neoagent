@@ -107,13 +107,19 @@ class NeoAgent:
     async def run(self, messages: list[Message], session: Session | None = None) -> ConversationResult:
         """Low-level interface: run the loop against a message list.
 
-        If session is provided, its messages are ignored in favour of the
-        explicit messages list (the list is set as the session's messages).
         If session is None, a transient session is created for this call.
+        If session is provided and already has messages, raises ValueError to
+        prevent silent state pollution — use session.messages directly, or pass
+        a fresh session created with agent.new_session().
         """
         if session is None:
             session = Session.create()
             session.messages = list(messages)
+        elif session.messages:
+            raise ValueError(
+                "Cannot pass both messages and a session with existing messages. "
+                "Use session.messages directly, or pass a fresh session."
+            )
         else:
             session.messages = list(messages)
         return await self._loop.run(session=session)

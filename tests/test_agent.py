@@ -178,3 +178,77 @@ class TestNeoAgent:
         """session_dir defaults to None."""
         cfg = NeoAgentConfig(api_key="sk-test")
         assert cfg.session_dir is None
+
+
+# ── Fix 5: run() session state pollution guard ────────────────────────────────
+
+class TestRunSessionGuard:
+    """run(messages, session=existing) must raise ValueError if session has messages."""
+
+    @patch("neoagent.agent._create_provider")
+    async def test_run_raises_when_session_has_messages(self, mock_create):
+        """Passing messages + a session that already has messages must raise ValueError."""
+        mock_create.return_value = _make_mock_provider()
+        agent = NeoAgent(NeoAgentConfig(api_key="sk-test"))
+
+        session = agent.new_session()
+        session.messages.append(Message(role="user", content="existing message"))
+
+        with pytest.raises(ValueError, match="Cannot pass both messages"):
+            await agent.run([Message(role="user", content="new message")], session=session)
+
+    @patch("neoagent.agent._create_provider")
+    async def test_run_accepts_fresh_session_with_messages(self, mock_create):
+        """run(messages, session=fresh_session) with an empty session must work fine."""
+        mock_create.return_value = _make_mock_provider()
+        agent = NeoAgent(NeoAgentConfig(api_key="sk-test"))
+
+        turn = Turn(
+            response=Message(role="assistant", content="done"),
+            tool_calls=[], tool_results=[], stop_reason="end_turn",
+        )
+        agent._loop.run = AsyncMock(return_value=ConversationResult(turns=[turn], reason="completed"))
+
+        session = agent.new_session()  # empty session — no messages
+        result = await agent.run([Message(role="user", content="hello")], session=session)
+        assert isinstance(result, ConversationResult)
+
+    @patch("neoagent.agent._create_provider")
+    async def test_run_no_session_creates_transient_session(self, mock_create):
+        """run(messages) with no session must work and set messages on transient session."""
+        mock_create.return_value = _make_mock_provider()
+        agent = NeoAgent(NeoAgentConfig(api_key="sk-test"))
+
+        turn = Turn(
+            response=Message(role="assistant", content="ok"),
+            tool_calls=[], tool_results=[], stop_reason="end_turn",
+        )
+        agent._loop.run = AsyncMock(return_value=ConversationResult(turns=[turn], reason="completed"))
+
+        result = await agent.run([Message(role="user", content="hello")])
+        assert isinstance(result, ConversationResult)
+
+    @patch("neoagent.agent._create_provider")
+    async def test_run_session_messages_set_from_list(self, mock_create):
+        """run(messages, session=fresh) must set the fresh session's messages to the passed list."""
+        mock_create.return_value = _make_mock_provider()
+        agent = NeoAgent(NeoAgentConfig(api_key="sk-test"))
+
+        captured_sessions: list = []
+
+        async def capture_run(session):
+            captured_sessions.append(session)
+            turn = Turn(
+                response=Message(role="assistant", content="ok"),
+                tool_calls=[], tool_results=[], stop_reason="end_turn",
+            )
+            return ConversationResult(turns=[turn], reason="completed")
+
+        agent._loop.run = capture_run
+
+        session = agent.new_session()
+        msgs = [Message(role="user", content="test message")]
+        await agent.run(msgs, session=session)
+
+        assert len(captured_sessions) == 1
+        assert captured_sessions[0].messages == msgs

@@ -4,9 +4,12 @@ from typing import TYPE_CHECKING, Callable
 from neoagent.core.compress import ContextCompressor
 from neoagent.events import (
     EventBus,
-    CompressCheckEvent, CompressDoneEvent,
+    CompressCheckEvent, CompressDoneEvent, CompressFallbackEvent,
+    MemoryExtractEvent,
     ProviderRequestEvent, ProviderResponseEvent,
     TurnCompleteEvent,
+    # SkillChangeEvent: TODO v3.2 — emit in PromptBuilder.activate_skill/deactivate_skill
+    #   once PromptBuilder receives EventBus access.
 )
 
 if TYPE_CHECKING:
@@ -86,12 +89,17 @@ class QueryLoop:
             ))
             if should_compress:
                 old_summary = session_state.previous_summary if session_state else None
+                failures_before = session_state.compression_failures if session_state else 0
                 compressed = await self._compressor.compress(msgs, self.context_budget, session_state=session_state)
                 # Sync back: replace session messages with compressed list
                 _session.messages.clear()
                 _session.messages.extend(compressed)
                 msgs = _session.messages
-                if session_state and session_state.previous_summary:
+                failures_after = session_state.compression_failures if session_state else 0
+                if failures_after > failures_before:
+                    # LLM compress failed — truncation fallback was used
+                    self._bus.emit(CompressFallbackEvent(reason="LLM compression failed; fell back to truncation"))
+                elif session_state and session_state.previous_summary:
                     self._bus.emit(CompressDoneEvent(
                         summary=session_state.previous_summary,
                         previous_summary=old_summary,
@@ -138,8 +146,23 @@ class QueryLoop:
                     self._on_turn(turn)
                 if self._memory_manager:
                     current_tokens = self._compressor.estimate_tokens(msgs)
+                    tool_calls_before = session_state.memory_tool_calls if session_state else 0
+                    token_baseline_before = session_state.memory_token_baseline if session_state else 0
                     await self._memory_manager.maybe_extract(msgs, current_tokens, session_state=session_state)
+                    # Emit MemoryExtractEvent: triggered if tool_calls were reset (extraction ran)
+                    triggered = session_state is not None and session_state.memory_tool_calls < tool_calls_before
+                    token_delta = max(0, current_tokens - token_baseline_before)
+                    self._bus.emit(MemoryExtractEvent(
+                        triggered=triggered,
+                        tool_calls=tool_calls_before,
+                        token_delta=token_delta,
+                    ))
                 return ConversationResult(turns=turns, reason="completed")
+            if self._executor is None:
+                raise RuntimeError(
+                    "QueryLoop has no ToolExecutor but model requested tool calls. "
+                    "Pass tool_executor= to QueryLoop."
+                )
             results = await self._executor.execute(tool_calls)
             if self._memory_manager:
                 self._memory_manager.record_tool_calls(len(tool_calls), session_state=session_state)

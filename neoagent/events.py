@@ -87,6 +87,11 @@ class MemoryExtractEvent(Event):
 
 @dataclass(frozen=True)
 class SkillChangeEvent(Event):
+    """Emitted when a skill is activated or deactivated.
+
+    TODO v3.2: wire into PromptBuilder.activate_skill() / deactivate_skill()
+    once PromptBuilder receives EventBus access.
+    """
     name: str
     active: bool             # True=activate, False=deactivate
 

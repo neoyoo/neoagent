@@ -4,7 +4,10 @@ import pytest
 from neoagent.core.loop import QueryLoop
 from neoagent.core.types import ConversationResult, Message, TextBlock, ToolCall, ToolResult, ToolUseBlock, ToolResultBlock, Turn
 from neoagent.session import Session, SessionState
-from neoagent.events import EventBus, ToolCallEvent, ToolResultEvent, ProviderRequestEvent, TurnCompleteEvent
+from neoagent.events import (
+    EventBus, ToolCallEvent, ToolResultEvent, ProviderRequestEvent, TurnCompleteEvent,
+    CompressFallbackEvent, MemoryExtractEvent,
+)
 
 def _text_response(text="done"):
     resp = MagicMock()
@@ -294,3 +297,97 @@ async def test_loop_no_observer_field_after_task5():
     )
     # event_bus should exist
     assert hasattr(loop, '_bus')
+
+
+# ── Fix 2: executor=None guard ────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_loop_raises_when_executor_none_and_tool_calls_returned():
+    """QueryLoop with no ToolExecutor must raise RuntimeError if model returns tool calls."""
+    p = _make_provider(_tool_use_response("t1", "bash", {}))
+    loop = QueryLoop(
+        provider=p,
+        tool_registry=_make_registry(),
+        prompt_builder=_make_prompt_builder(),
+        # tool_executor NOT passed — defaults to None
+    )
+    session = _session_with("go")
+    with pytest.raises(RuntimeError, match="QueryLoop has no ToolExecutor"):
+        await loop.run(session=session)
+
+
+# ── Fix 4: CompressFallbackEvent ─────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_loop_emits_compress_fallback_event_on_llm_failure():
+    """When LLM compression fails, CompressFallbackEvent must be emitted."""
+    provider = _make_provider(_text_response("done"))
+    bus = EventBus()
+    fallback_events: list[CompressFallbackEvent] = []
+    bus.subscribe(CompressFallbackEvent, lambda e: fallback_events.append(e))
+
+    loop = QueryLoop(
+        provider=provider,
+        tool_registry=_make_registry(),
+        prompt_builder=_make_prompt_builder(),
+        context_budget=1,   # force compression check to trigger
+        event_bus=bus,
+    )
+
+    # Simulate a session state that already has a failure recorded
+    # (so compress() falls back immediately due to max_failures check)
+    session = Session.create()
+    session.messages.append(Message(role="user", content="hi"))
+    # Pre-set failures to max so compress() skips LLM and goes straight to truncation
+    from neoagent.core.compress import ContextCompressor
+    session.state.compression_failures = ContextCompressor.__init__.__defaults__[0]  # max_failures default = 3
+
+    # Manually set to max
+    session.state.compression_failures = 3
+
+    # Mock the compressor to simulate a fallback (failure count increases)
+    original_compress = loop._compressor.compress
+
+    async def mock_compress(messages, budget, session_state=None):
+        if session_state:
+            session_state.compression_failures += 1  # simulate failure
+        return messages  # return as-is (truncation fallback)
+
+    loop._compressor.compress = mock_compress
+    loop._compressor.should_compress = lambda msgs, schemas, budget: True  # always compress
+
+    await loop.run(session=session)
+
+    assert len(fallback_events) == 1
+    assert "fell back" in fallback_events[0].reason.lower() or "fallback" in fallback_events[0].reason.lower()
+
+
+# ── Fix 4: MemoryExtractEvent ─────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_loop_emits_memory_extract_event_when_memory_manager_present():
+    """MemoryExtractEvent must be emitted after maybe_extract completes."""
+    provider = _make_provider(_text_response("done"))
+    bus = EventBus()
+    extract_events: list[MemoryExtractEvent] = []
+    bus.subscribe(MemoryExtractEvent, lambda e: extract_events.append(e))
+
+    mock_memory_manager = MagicMock()
+    mock_memory_manager.maybe_extract = AsyncMock()
+    mock_memory_manager.record_tool_calls = MagicMock()
+
+    loop = QueryLoop(
+        provider=provider,
+        tool_registry=_make_registry(),
+        prompt_builder=_make_prompt_builder(),
+        memory_manager=mock_memory_manager,
+        event_bus=bus,
+    )
+
+    session = _session_with("hello")
+    await loop.run(session=session)
+
+    assert len(extract_events) == 1
+    # triggered=False because no tool calls happened (memory_tool_calls stays 0)
+    assert isinstance(extract_events[0], MemoryExtractEvent)
+    assert extract_events[0].triggered is False

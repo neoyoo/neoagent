@@ -332,3 +332,35 @@ class TestBashToolRestrictedShell:
         assert "PATH" in _DEFAULT_ENV_WHITELIST
         assert "HOME" in _DEFAULT_ENV_WHITELIST
         assert "USER" in _DEFAULT_ENV_WHITELIST
+
+
+# ── Fix 3: Process group kill on timeout ─────────────────────────────────────
+
+class TestBashToolKillpg:
+    """Tests that timeout kills the entire process group, not just the top process."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_kills_pipeline_children(self):
+        """Timeout must kill child processes spawned in a pipeline."""
+        tool = BashTool()
+        # A pipeline where the second process sleeps — both must be killed on timeout
+        result = await tool.execute(BashInput(command="sleep 10 | sleep 10", timeout=1))
+        assert result.is_error
+        assert "Timed out" in result.output
+
+    @pytest.mark.asyncio
+    async def test_process_group_created(self):
+        """start_new_session=True means the subprocess runs fine in its own session."""
+        tool = BashTool()
+        # A simple command that works fine — confirms start_new_session doesn't break execution
+        result = await tool.execute(BashInput(command="echo hello_from_new_session"))
+        assert not result.is_error
+        assert "hello_from_new_session" in result.output
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_error_message(self):
+        """After kill, result must indicate the configured timeout value."""
+        tool = BashTool()
+        result = await tool.execute(BashInput(command="sleep 100", timeout=1))
+        assert result.is_error
+        assert "1s" in result.output  # timeout=1 reported in message

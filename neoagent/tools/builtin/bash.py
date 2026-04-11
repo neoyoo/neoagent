@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import signal
 from pathlib import Path
 from pydantic import BaseModel, Field
 from neoagent.tools.base import BaseTool
@@ -82,6 +83,7 @@ class BashTool(BaseTool):
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=str(self._cwd) if self._cwd else None,
                 env=safe_env,
+                start_new_session=True,  # create process group so we can kill the whole tree
             )
             try:
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=input.timeout)
@@ -90,7 +92,10 @@ class BashTool(BaseTool):
                     return ToolResult(call_id="", output=output or f"Exit code: {proc.returncode}", is_error=True)
                 return ToolResult(call_id="", output=output)
             except asyncio.TimeoutError:
-                proc.kill()
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)  # Kill entire process group
+                except (ProcessLookupError, PermissionError):
+                    proc.kill()  # Fallback to killing just the top-level process
                 await proc.wait()
                 return ToolResult(call_id="", output=f"Timed out after {input.timeout}s", is_error=True)
         except Exception as e:

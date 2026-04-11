@@ -169,3 +169,48 @@ async def test_executor_emits_result_event_on_error():
     ex = ToolExecutor(registry=r, permission_checker=PermissionChecker(auto_approve=True), event_bus=bus)
     await ex.execute([ToolCall(id="c8", name="broken", input={"text": "x"})])
     assert received[0].is_error
+
+
+# ── Fix 1: ToolCallEvent input_data is a deepcopy ────────────────────────────
+
+@pytest.mark.asyncio
+async def test_tool_call_event_input_data_is_deepcopy():
+    """Handler mutation of ToolCallEvent.input_data must not affect actual execution."""
+    r = ToolRegistry()
+    r.register(EchoTool())
+    bus = EventBus()
+
+    original_input = {"text": "original"}
+    mutated_in_handler: dict = {}
+
+    def mutating_handler(event: ToolCallEvent):
+        # Mutate the event's input_data — must NOT affect execution
+        event.input_data["text"] = "mutated"
+        mutated_in_handler.update(event.input_data)
+
+    bus.subscribe(ToolCallEvent, mutating_handler)
+    ex = ToolExecutor(registry=r, permission_checker=PermissionChecker(auto_approve=True), event_bus=bus)
+    results = await ex.execute([ToolCall(id="c9", name="echo", input=original_input)])
+
+    # Handler received the event (and mutated its copy)
+    assert mutated_in_handler["text"] == "mutated"
+    # But actual execution used the original value
+    assert results[0].output == "original"
+    assert not results[0].is_error
+
+
+@pytest.mark.asyncio
+async def test_tool_call_event_input_data_is_not_same_object():
+    """ToolCallEvent.input_data must be a different object from call.input."""
+    r = ToolRegistry()
+    r.register(EchoTool())
+    bus = EventBus()
+    event_input_ids: list[int] = []
+    bus.subscribe(ToolCallEvent, lambda e: event_input_ids.append(id(e.input_data)))
+
+    call_input = {"text": "hello"}
+    ex = ToolExecutor(registry=r, permission_checker=PermissionChecker(auto_approve=True), event_bus=bus)
+    await ex.execute([ToolCall(id="c10", name="echo", input=call_input)])
+
+    assert len(event_input_ids) == 1
+    assert event_input_ids[0] != id(call_input)
