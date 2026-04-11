@@ -9,6 +9,7 @@ description = "Minimal Python agent framework — Query Loop + Tool System + Pro
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=0.28.0",
+    "openai>=1.0",
     "pydantic>=2.0",
     "tiktoken>=0.7.0",
 ]

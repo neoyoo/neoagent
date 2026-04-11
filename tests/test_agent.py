@@ -37,28 +37,30 @@ class DummyTool(BaseTool):
         return ToolResult(call_id="x", output="ok")
 
 
+def _make_mock_provider():
+    mock_prov = MagicMock()
+    mock_prov.get_context_window.return_value = 200_000
+    return mock_prov
+
+
 class TestNeoAgent:
-    @patch("neoagent.agent.AnthropicProvider")
-    def test_construction(self, mock_prov_cls):
-        mock_prov_cls.return_value = MagicMock()
-        mock_prov_cls.return_value.get_context_window.return_value = 200_000
+    @patch("neoagent.agent._create_provider")
+    def test_construction(self, mock_create):
+        mock_create.return_value = _make_mock_provider()
         agent = NeoAgent(NeoAgentConfig(api_key="sk-test"))
         assert agent is not None
 
-    @patch("neoagent.agent.AnthropicProvider")
-    def test_register_tool(self, mock_prov_cls):
-        mock_prov_cls.return_value = MagicMock()
-        mock_prov_cls.return_value.get_context_window.return_value = 200_000
+    @patch("neoagent.agent._create_provider")
+    def test_register_tool(self, mock_create):
+        mock_create.return_value = _make_mock_provider()
         agent = NeoAgent(NeoAgentConfig(api_key="sk-test"))
         agent.register_tool(DummyTool())
         schemas = agent._registry.get_schemas()
         assert any(s["name"] == "dummy" for s in schemas)
 
-    @patch("neoagent.agent.AnthropicProvider")
-    async def test_chat_returns_string(self, mock_prov_cls):
-        mock_prov = MagicMock()
-        mock_prov.get_context_window.return_value = 200_000
-        mock_prov_cls.return_value = mock_prov
+    @patch("neoagent.agent._create_provider")
+    async def test_chat_returns_string(self, mock_create):
+        mock_create.return_value = _make_mock_provider()
         agent = NeoAgent(NeoAgentConfig(api_key="sk-test"))
         # Mock the loop's run method
         turn = Turn(
@@ -69,11 +71,9 @@ class TestNeoAgent:
         result = await agent.chat("Hi")
         assert result == "Hello!"
 
-    @patch("neoagent.agent.AnthropicProvider")
-    async def test_run_returns_conversation_result(self, mock_prov_cls):
-        mock_prov = MagicMock()
-        mock_prov.get_context_window.return_value = 200_000
-        mock_prov_cls.return_value = mock_prov
+    @patch("neoagent.agent._create_provider")
+    async def test_run_returns_conversation_result(self, mock_create):
+        mock_create.return_value = _make_mock_provider()
         agent = NeoAgent(NeoAgentConfig(api_key="sk-test"))
         turn = Turn(
             response=Message(role="assistant", content="done"),

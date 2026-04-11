@@ -3,16 +3,25 @@ from neoagent.config import NeoAgentConfig
 from neoagent.core.loop import QueryLoop
 from neoagent.core.prompt import PromptBuilder, PromptSection
 from neoagent.core.types import ConversationResult, Message, TextBlock
-from neoagent.providers.anthropic import AnthropicProvider
+from neoagent.providers.base import Provider
 from neoagent.tools.base import BaseTool
 from neoagent.tools.permission import PermissionChecker
 from neoagent.tools.registry import ToolRegistry
 
 
+def _create_provider(config: NeoAgentConfig) -> Provider:
+    if config.provider == "openai":
+        from neoagent.providers.openai import OpenAIProvider
+        return OpenAIProvider(api_key=config.api_key, model=config.model)
+    else:
+        from neoagent.providers.anthropic import AnthropicProvider
+        return AnthropicProvider(api_key=config.api_key, model=config.model)
+
+
 class NeoAgent:
     def __init__(self, config: NeoAgentConfig) -> None:
         self._config = config
-        self._provider = AnthropicProvider(api_key=config.api_key, model=config.model)
+        self._provider = _create_provider(config)
         self._permission = PermissionChecker()
         self._registry = ToolRegistry(max_result_size=config.max_result_size)
         self._prompt_builder = PromptBuilder()
