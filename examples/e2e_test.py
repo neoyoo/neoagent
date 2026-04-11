@@ -142,7 +142,7 @@ async def test_tool_read(cfg: dict) -> None:
     try:
         config = NeoAgentConfig(**cfg)
         agent  = NeoAgent(config)
-        agent.register_tool(ReadTool())
+        agent.register_tool(ReadTool(allowed_directories=[Path(tmp_path).parent]))
 
         prompt = f"Please read the file at {tmp_path} and tell me what it contains."
         response = await agent.chat(prompt)
@@ -200,8 +200,8 @@ async def test_multi_turn_tools(cfg: dict) -> None:
 
         config = NeoAgentConfig(**cfg)
         agent  = NeoAgent(config)
-        agent.register_tool(GlobTool())
-        agent.register_tool(ReadTool())
+        agent.register_tool(GlobTool(allowed_directories=[Path(tmp_dir)]))
+        agent.register_tool(ReadTool(allowed_directories=[Path(tmp_dir)]))
 
         prompt = (
             f"List all .py files in {tmp_dir} using the glob tool "
