@@ -85,15 +85,17 @@ async def test_toolsearch_returns_json():
 
 
 @pytest.mark.asyncio
-async def test_toolsearch_returns_schema_for_matching_tool():
-    """execute() must include the full schema of matched tools."""
+async def test_toolsearch_returns_name_and_description_for_matching_tool():
+    """execute() must return name + description (not full schema) for matched tools."""
     _, reg, t = _make_setup(["github__create_issue", "github__list_repos"])
     inp = ToolSearchInput(query="select:github__create_issue")
     result = await t.execute(inp)
     data = json.loads(result.output)
     assert len(data) == 1
     assert data[0]["name"] == "github__create_issue"
-    assert "input_schema" in data[0]
+    assert "description" in data[0]
+    # Full schema should NOT be returned by tool_search — only after promote on next turn
+    assert "input_schema" not in data[0]
 
 
 @pytest.mark.asyncio
@@ -156,14 +158,17 @@ async def test_toolsearch_promotes_all_keyword_matches():
 # ── execute(): schema from ToolRegistry ──────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_toolsearch_schema_comes_from_tool_registry():
-    """Schema in output must match what ToolRegistry.get_tool().get_schema() returns."""
+async def test_toolsearch_output_contains_name_and_description():
+    """Output must contain name and description from the deferred index."""
     deferred, registry, t = _make_setup(["github__create_issue"])
     inp = ToolSearchInput(query="select:github__create_issue")
     result = await t.execute(inp)
     data = json.loads(result.output)
-    expected_schema = registry.get_tool("github__create_issue").get_schema()
-    assert data[0] == expected_schema
+    assert len(data) == 1
+    assert data[0]["name"] == "github__create_issue"
+    assert data[0]["description"] == "Description of github__create_issue"
+    # Full schema is NOT included — only exposed in the LLM tools list after promote
+    assert "input_schema" not in data[0]
 
 
 @pytest.mark.asyncio

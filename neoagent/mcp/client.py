@@ -33,11 +33,63 @@ class MCPClient:
         self.name = name
         self._transport = transport
         self._next_id = 1
+        # Buffer for responses received out-of-order: id → message dict
+        self._pending: dict[int, dict] = {}
 
     def _next_request_id(self) -> int:
         rid = self._next_id
         self._next_id += 1
         return rid
+
+    async def _request(self, method: str, params: dict) -> dict:
+        """Send a JSON-RPC request and return the matching response.
+
+        Handles interleaved notifications (no "id" field) by skipping them
+        with a DEBUG log. Handles out-of-order responses by buffering them
+        in ``self._pending`` until the matching id arrives.
+
+        Args:
+            method: JSON-RPC method name.
+            params: Parameters dict.
+
+        Returns:
+            The response dict with matching id.
+        """
+        req_id = self._next_request_id()
+
+        # Check if the response was already buffered from a previous read
+        if req_id in self._pending:
+            return self._pending.pop(req_id)
+
+        await self._transport.send({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "method": method,
+            "params": params,
+        })
+
+        # Loop until we get the response for our request id
+        while True:
+            msg = await self._transport.receive()
+
+            # Notifications have no "id" field — log and skip
+            if "id" not in msg:
+                logger.debug(
+                    "MCPClient '%s': received notification method=%s, skipping",
+                    self.name, msg.get("method", "<unknown>"),
+                )
+                continue
+
+            msg_id = msg["id"]
+            if msg_id == req_id:
+                return msg
+
+            # Response for a different (future) request — buffer it
+            logger.debug(
+                "MCPClient '%s': buffering out-of-order response id=%s (waiting for id=%s)",
+                self.name, msg_id, req_id,
+            )
+            self._pending[msg_id] = msg
 
     async def connect(self) -> None:
         """Establish transport and perform the MCP initialize handshake.
@@ -48,21 +100,15 @@ class MCPClient:
         """
         await self._transport.connect()
 
-        # Step 1: initialize request
-        init_id = self._next_request_id()
-        await self._transport.send({
-            "jsonrpc": "2.0",
-            "id": init_id,
-            "method": "initialize",
-            "params": {
+        # Step 1: initialize request (uses _request for id correlation)
+        response = await self._request(
+            "initialize",
+            {
                 "protocolVersion": _MCP_PROTOCOL_VERSION,
                 "capabilities": {},
                 "clientInfo": {"name": "neoagent", "version": "1.0"},
             },
-        })
-
-        # Wait for initialize response
-        response = await self._transport.receive()
+        )
         if "error" in response:
             raise RuntimeError(
                 f"MCPClient '{self.name}': initialize failed: {response['error']}"
@@ -82,14 +128,7 @@ class MCPClient:
         Returns:
             list[MCPToolInfo] — one entry per tool exposed by the server.
         """
-        req_id = self._next_request_id()
-        await self._transport.send({
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "method": "tools/list",
-            "params": {},
-        })
-        response = await self._transport.receive()
+        response = await self._request("tools/list", {})
         if "error" in response:
             raise RuntimeError(
                 f"MCPClient '{self.name}': tools/list failed: {response['error']}"
@@ -116,17 +155,10 @@ class MCPClient:
         Returns:
             String result (concatenated text content blocks).
         """
-        req_id = self._next_request_id()
-        await self._transport.send({
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "method": "tools/call",
-            "params": {
-                "name": tool_name,
-                "arguments": arguments,
-            },
-        })
-        response = await self._transport.receive()
+        response = await self._request(
+            "tools/call",
+            {"name": tool_name, "arguments": arguments},
+        )
         if "error" in response:
             raise RuntimeError(
                 f"MCPClient '{self.name}': tools/call '{tool_name}' failed: {response['error']}"

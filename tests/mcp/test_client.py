@@ -254,3 +254,106 @@ async def test_mcpclient_close_calls_transport_close():
     await client.connect()
     await client.close()
     assert t._connected is False
+
+
+# ── MCPClient._request(): id correlation and notification handling ────────────
+
+@pytest.mark.asyncio
+async def test_mcpclient_request_skips_notification_no_id():
+    """_request() must skip messages with no 'id' field (notifications) and wait for
+    the matching response."""
+    notification = {
+        "jsonrpc": "2.0",
+        "method": "notifications/progress",
+        "params": {"progress": 50},
+    }
+    # Server sends: notification (no id), then the real response (id=1)
+    t = InMemoryTransport([
+        _make_initialize_response(1),
+        # After connect, list_tools sends request id=2; server sends a notification first
+        notification,
+        _make_tools_list_response([], request_id=2),
+    ])
+    client = MCPClient(name="srv", transport=t)
+    await client.connect()
+    tools = await client.list_tools()
+    # The notification was skipped; list_tools still got the correct response
+    assert tools == []
+
+
+@pytest.mark.asyncio
+async def test_mcpclient_request_skips_multiple_notifications():
+    """_request() must skip multiple interleaved notifications before the response."""
+    notif1 = {"jsonrpc": "2.0", "method": "notifications/log", "params": {"message": "a"}}
+    notif2 = {"jsonrpc": "2.0", "method": "notifications/log", "params": {"message": "b"}}
+    content = [{"type": "text", "text": "result"}]
+    t = InMemoryTransport([
+        _make_initialize_response(1),
+        notif1,
+        notif2,
+        _make_tool_call_response(content, request_id=2),
+    ])
+    client = MCPClient(name="srv", transport=t)
+    await client.connect()
+    result = await client.call_tool("do_thing", {})
+    assert result == "result"
+
+
+@pytest.mark.asyncio
+async def test_mcpclient_request_buffers_wrong_id_response():
+    """_request() must buffer a response with a non-matching id and return it when
+    the correct request comes in later."""
+    tools_payload = [{"name": "t1", "description": "d1", "inputSchema": {}}]
+    content = [{"type": "text", "text": "call result"}]
+
+    # Simulate out-of-order: call_tool response (id=3) arrives before list_tools response (id=2)
+    t = InMemoryTransport([
+        _make_initialize_response(1),
+        # list_tools sends id=2; server returns id=3 first (out-of-order), then id=2
+        _make_tool_call_response(content, request_id=3),
+        _make_tools_list_response(tools_payload, request_id=2),
+        # call_tool sends id=3; already buffered — no more receives needed
+    ])
+    client = MCPClient(name="srv", transport=t)
+    await client.connect()
+
+    # list_tools sends id=2; gets id=3 first (buffered), then id=2 → returns correct tools
+    tools = await client.list_tools()
+    assert len(tools) == 1
+    assert tools[0].name == "t1"
+
+    # call_tool sends id=3; already buffered from previous read → returns immediately
+    result = await client.call_tool("t1", {})
+    assert result == "call result"
+
+
+@pytest.mark.asyncio
+async def test_mcpclient_buffered_response_used_on_next_request():
+    """A response buffered during one request must be returned on the next matching request."""
+    # Scenario: list_tools (id=2) gets a response with id=3 first.
+    # Then call_tool (id=3) should pick up the buffered response without another receive().
+    content = [{"type": "text", "text": "buffered result"}]
+    tools_payload = [{"name": "my_tool", "description": "desc", "inputSchema": {}}]
+
+    transport_responses = [
+        _make_initialize_response(1),
+        # list_tools request (id=2): server returns id=3 (out of order), then id=2
+        _make_tool_call_response(content, request_id=3),
+        _make_tools_list_response(tools_payload, request_id=2),
+        # call_tool request (id=3): already buffered, no receive needed
+    ]
+    t = InMemoryTransport(transport_responses)
+    client = MCPClient(name="srv", transport=t)
+    await client.connect()
+
+    # list_tools: buffers id=3, returns id=2 result
+    tools = await client.list_tools()
+    assert tools[0].name == "my_tool"
+
+    # call_tool: id=3 was buffered; _pending has it, no transport.receive() call needed
+    assert 3 in client._pending
+
+    result = await client.call_tool("my_tool", {})
+    assert result == "buffered result"
+    # Buffer cleared after use
+    assert 3 not in client._pending

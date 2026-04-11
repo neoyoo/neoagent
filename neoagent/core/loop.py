@@ -83,6 +83,14 @@ class QueryLoop:
             msgs = _session.messages
             session_state = _session.state
 
+        # Propagate session state into ToolSearchTool so promote writes to session scope.
+        # We look up the tool by well-known name to avoid a hard import cycle.
+        if self._deferred_registry and session_state is not None:
+            from neoagent.tools.builtin.tool_search import ToolSearchTool as _TST
+            _ts = self._registry.get_tool("tool_search")
+            if isinstance(_ts, _TST):
+                _ts._session_state = session_state
+
         turns: list[Turn] = []
         for turn_idx in range(self.max_turns):
             schemas = self._registry.get_schemas()
@@ -112,13 +120,31 @@ class QueryLoop:
                     ))
             system = self._prompt_builder.build()
 
-            # MCP deferred loading: filter schemas + inject deferred names into system prompt
+            # MCP deferred loading: filter schemas + inject deferred names into system prompt.
+            # A tool managed by the deferred registry is hidden until promoted.
+            # Promotion is tracked at two levels (OR logic for visibility):
+            #   1. Session-scoped: session_state.promoted_tools (preferred, per-session isolation)
+            #   2. Global: DeferredToolRegistry.is_deferred() == False (backward compat)
+            # A tool is visible when EITHER condition indicates it has been promoted.
             if self._deferred_registry:
-                schemas = [
-                    s for s in schemas
-                    if not self._deferred_registry.is_deferred(s["name"])
-                ]
-                deferred_names = self._deferred_registry.get_deferred_names()
+                session_promoted = session_state.promoted_tools if session_state else set()
+
+                def _is_hidden(tool_name: str) -> bool:
+                    if tool_name not in self._deferred_registry._all:
+                        return False  # not a managed deferred tool
+                    # Visible if promoted in this session OR promoted globally
+                    return (
+                        tool_name not in session_promoted
+                        and self._deferred_registry.is_deferred(tool_name)
+                    )
+
+                schemas = [s for s in schemas if not _is_hidden(s["name"])]
+
+                # Show names of all tools that are still deferred in this session
+                deferred_names = sorted(
+                    name for name in self._deferred_registry._all
+                    if _is_hidden(name)
+                )
                 if deferred_names:
                     deferred_section = (
                         "\n\n<deferred-tools>\n"

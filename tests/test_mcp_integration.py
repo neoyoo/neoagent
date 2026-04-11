@@ -424,3 +424,86 @@ async def test_queryloop_promoted_tool_visible_next_turn():
     assert "github__create_issue" not in captured_tools_per_turn[0]
     # Turn 2: github__create_issue now visible (promoted)
     assert "github__create_issue" in captured_tools_per_turn[1]
+
+
+@pytest.mark.asyncio
+async def test_two_sessions_have_independent_promote_state():
+    """Promoting a tool in Session A must not make it visible in Session B."""
+    from pydantic import create_model
+    from neoagent.session import Session
+    from neoagent.tools.builtin.tool_search import ToolSearchTool
+
+    class _MCPTool(BaseTool):
+        name: str = "github__create_issue"
+        description: str = "Create issue"
+        input_model: type[BaseModel] = create_model("GI", title=(str, ...))
+        permission: str = "auto"
+        is_concurrent_safe: bool = True
+        async def execute(self, input: BaseModel) -> ToolResult:
+            return ToolResult(call_id="", output="done")
+
+    registry = ToolRegistry()
+    deferred = DeferredToolRegistry()
+    registry.register(_MCPTool())
+    deferred.register("github__create_issue", "Create issue")
+
+    search_tool = ToolSearchTool(deferred_registry=deferred, tool_registry=registry)
+    registry.register(search_tool)
+
+    session_a = Session.create()
+    session_b = Session.create()
+
+    # Session A promotes the tool via session state
+    session_a.state.promoted_tools.add("github__create_issue")
+
+    # Session B has not promoted anything
+    assert "github__create_issue" not in session_b.state.promoted_tools
+
+    # Verify: the global DeferredToolRegistry still marks the tool as deferred
+    # (because the new QueryLoop logic uses session_state.promoted_tools, not global state)
+    assert deferred.is_deferred("github__create_issue")
+
+    # Session A: tool is visible (in promoted_tools)
+    assert "github__create_issue" in session_a.state.promoted_tools
+    # Session B: tool is hidden
+    assert "github__create_issue" not in session_b.state.promoted_tools
+
+
+@pytest.mark.asyncio
+async def test_tool_search_updates_session_state_promoted_tools():
+    """ToolSearchTool.execute() must write to session_state.promoted_tools."""
+    from pydantic import create_model
+    from neoagent.session import Session, SessionState
+    from neoagent.tools.builtin.tool_search import ToolSearchTool, ToolSearchInput
+
+    class _MCPTool(BaseTool):
+        name: str = "github__create_issue"
+        description: str = "Create issue"
+        input_model: type[BaseModel] = create_model("GI", title=(str, ...))
+        permission: str = "auto"
+        is_concurrent_safe: bool = True
+        async def execute(self, input: BaseModel) -> ToolResult:
+            return ToolResult(call_id="", output="done")
+
+    registry = ToolRegistry()
+    deferred = DeferredToolRegistry()
+    registry.register(_MCPTool())
+    deferred.register("github__create_issue", "Create issue")
+
+    tool = ToolSearchTool(deferred_registry=deferred, tool_registry=registry)
+
+    # Inject session state before calling execute (as QueryLoop does)
+    session_state = SessionState()
+    tool._session_state = session_state
+
+    inp = ToolSearchInput(query="select:github__create_issue")
+    result = await tool.execute(inp)
+    data = json.loads(result.output)
+
+    # Result contains name + description only (not full schema)
+    assert len(data) == 1
+    assert data[0]["name"] == "github__create_issue"
+    assert "input_schema" not in data[0]
+
+    # Session state must have the promoted tool
+    assert "github__create_issue" in session_state.promoted_tools

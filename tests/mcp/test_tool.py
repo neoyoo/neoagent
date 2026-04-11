@@ -1,8 +1,9 @@
 from __future__ import annotations
 import pytest
+from typing import Any, Literal
 from unittest.mock import AsyncMock, MagicMock
 from pydantic import BaseModel
-from neoagent.mcp.tool import MCPTool, create_mcp_tools
+from neoagent.mcp.tool import MCPTool, create_mcp_tools, _schema_to_pydantic, _json_schema_to_type
 from neoagent.mcp.client import MCPClient, MCPToolInfo
 from neoagent.tools.base import BaseTool
 from neoagent.core.types import ToolResult
@@ -205,3 +206,184 @@ def test_mcptool_get_schema_uses_prefixed_name():
     schema = tool.get_schema()
     assert schema["name"] == "github__create_issue"
     assert "input_schema" in schema
+
+
+# ── _schema_to_pydantic(): enhanced JSON Schema support (Fix 8) ───────────────
+
+def test_schema_typed_array_string():
+    """array with items type string → list[str]."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "tags": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["tags"],
+    }
+    model = _schema_to_pydantic("test_tool", schema)
+    fields = model.model_fields
+    assert "tags" in fields
+    # Validate that list[str] is accepted
+    instance = model.model_validate({"tags": ["a", "b", "c"]})
+    assert instance.tags == ["a", "b", "c"]
+
+
+def test_schema_typed_array_integer():
+    """array with items type integer → list[int]."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "ids": {"type": "array", "items": {"type": "integer"}},
+        },
+        "required": ["ids"],
+    }
+    model = _schema_to_pydantic("test_tool", schema)
+    instance = model.model_validate({"ids": [1, 2, 3]})
+    assert instance.ids == [1, 2, 3]
+
+
+def test_schema_untyped_array_fallback_to_list():
+    """array without items → plain list (no item type constraint)."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "items": {"type": "array"},
+        },
+    }
+    model = _schema_to_pydantic("test_tool", schema)
+    instance = model.model_validate({"items": [1, "two", True]})
+    assert instance.items == [1, "two", True]
+
+
+def test_schema_nested_object_creates_pydantic_model():
+    """object type with nested properties → nested Pydantic model."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "address": {
+                "type": "object",
+                "properties": {
+                    "street": {"type": "string"},
+                    "number": {"type": "integer"},
+                },
+                "required": ["street"],
+            },
+        },
+        "required": ["address"],
+    }
+    model = _schema_to_pydantic("test_tool", schema)
+    instance = model.model_validate({"address": {"street": "Main St", "number": 42}})
+    assert instance.address.street == "Main St"
+    assert instance.address.number == 42
+
+
+def test_schema_nested_object_without_properties_falls_back_to_dict():
+    """object type with no properties → dict fallback."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "metadata": {"type": "object"},
+        },
+    }
+    model = _schema_to_pydantic("test_tool", schema)
+    instance = model.model_validate({"metadata": {"key": "value"}})
+    assert instance.metadata == {"key": "value"}
+
+
+def test_schema_enum_creates_literal():
+    """enum field → Literal[...] type annotation."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "color": {"enum": ["red", "green", "blue"]},
+        },
+        "required": ["color"],
+    }
+    model = _schema_to_pydantic("test_tool", schema)
+    # Valid enum value should be accepted
+    instance = model.model_validate({"color": "red"})
+    assert instance.color == "red"
+
+
+def test_schema_field_with_default():
+    """field with 'default' key → optional with that default."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "default": 10},
+        },
+    }
+    model = _schema_to_pydantic("test_tool", schema)
+    # No value provided → default kicks in
+    instance = model.model_validate({})
+    assert instance.limit == 10
+
+
+def test_schema_required_field_no_default():
+    """Required field without default → must be provided."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string"},
+        },
+        "required": ["name"],
+    }
+    model = _schema_to_pydantic("test_tool", schema)
+    import pytest
+    with pytest.raises(Exception):
+        model.model_validate({})  # should fail — required field missing
+
+
+def test_schema_unknown_type_falls_back_to_any():
+    """Unknown JSON Schema type → Any (accept anything)."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "data": {"type": "unknown_custom_type"},
+        },
+    }
+    model = _schema_to_pydantic("test_tool", schema)
+    instance = model.model_validate({"data": {"arbitrary": "value"}})
+    assert instance.data == {"arbitrary": "value"}
+
+
+def test_schema_empty_enum_falls_back_to_any():
+    """Empty enum list → Any fallback."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "val": {"enum": []},
+        },
+    }
+    # Should not raise
+    model = _schema_to_pydantic("test_tool", schema)
+    assert model is not None
+
+
+def test_mcptool_with_typed_array_schema():
+    """MCPTool built from a schema with typed arrays validates correctly."""
+    client = _make_mock_client("github")
+    info = _make_tool_info("list_users", input_schema={
+        "type": "object",
+        "properties": {
+            "group_ids": {"type": "array", "items": {"type": "integer"}},
+        },
+        "required": ["group_ids"],
+    })
+    tool = MCPTool(client=client, server_name="github", tool_info=info)
+    instance = tool.input_model.model_validate({"group_ids": [1, 2, 3]})
+    assert instance.group_ids == [1, 2, 3]
+
+
+def test_mcptool_with_enum_schema():
+    """MCPTool built from a schema with enum validates correctly."""
+    client = _make_mock_client("github")
+    info = _make_tool_info("set_status", input_schema={
+        "type": "object",
+        "properties": {
+            "status": {"enum": ["open", "closed", "pending"]},
+        },
+        "required": ["status"],
+    })
+    tool = MCPTool(client=client, server_name="github", tool_info=info)
+    instance = tool.input_model.model_validate({"status": "open"})
+    assert instance.status == "open"
