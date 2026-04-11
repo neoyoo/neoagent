@@ -32,7 +32,7 @@ def _parse_content_blocks(raw_blocks: list) -> list[ContentBlock]:
     return parsed
 
 class AnthropicProvider(Provider):
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514", max_tokens: int = 8096, base_url: str | None = None):
+    def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514", max_tokens: int = 8192, base_url: str | None = None):
         client_kwargs: dict = {"api_key": api_key}
         if base_url:
             client_kwargs["base_url"] = base_url
@@ -43,9 +43,10 @@ class AnthropicProvider(Provider):
     def get_context_window(self) -> int:
         return _DEFAULT_CONTEXT_WINDOW
 
-    async def create(self, system: str, messages: list[Message], tools: list[dict]) -> Response:
+    async def create(self, system: str, messages: list[Message], tools: list[dict], **kwargs) -> Response:
+        max_tokens = kwargs.get("max_tokens", self.max_tokens)
         raw = await self._client.messages.create(
-            model=self.model, max_tokens=self.max_tokens,
+            model=self.model, max_tokens=max_tokens,
             system=system, messages=_serialize_messages(messages), tools=tools,
         )
         return Response(

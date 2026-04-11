@@ -13,8 +13,8 @@ from neoagent.providers.base import Provider, Response
 from neoagent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
-_MAX_TOKENS_RETRY_FRACTION = 0.5
-_DEFAULT_MAX_TOKENS = 8096
+_DEFAULT_MAX_TOKENS = 8192
+_MAX_RETRY_TOKENS = 16384
 
 class QueryLoop:
     def __init__(self, provider: Provider, tool_registry: ToolRegistry, prompt_builder: PromptBuilder,
@@ -51,7 +51,17 @@ class QueryLoop:
                 self._observer.on_provider_request(system, msgs, schemas, turn=turn_idx)
             response = await self._provider.create(system=system, messages=msgs, tools=schemas, max_tokens=_DEFAULT_MAX_TOKENS)
             if response.stop_reason == "max_tokens":
-                response = await self._retry_with_lower_max(system, msgs, schemas)
+                response = await self._retry_with_higher_max(system, msgs, schemas)
+            if response.stop_reason == "max_tokens":
+                # Still truncated after retry — treat as end_turn to avoid corrupt tool calls
+                turn = Turn(
+                    response=Message(role="assistant", content=response.content),
+                    tool_calls=[], tool_results=[], stop_reason="max_tokens",
+                )
+                turns.append(turn)
+                if self._on_turn:
+                    self._on_turn(turn)
+                return ConversationResult(turns=turns, reason="completed")
             if self._observer:
                 self._observer.on_provider_response(
                     response.content, response.stop_reason,
@@ -86,6 +96,6 @@ class QueryLoop:
                 self._on_turn(turn)
         return ConversationResult(turns=turns, reason="max_turns")
 
-    async def _retry_with_lower_max(self, system, messages, tools):
-        lower = max(1, int(_DEFAULT_MAX_TOKENS * _MAX_TOKENS_RETRY_FRACTION))
-        return await self._provider.create(system=system, messages=messages, tools=tools, max_tokens=lower)
+    async def _retry_with_higher_max(self, system, messages, tools):
+        higher = min(_MAX_RETRY_TOKENS, _DEFAULT_MAX_TOKENS * 2)
+        return await self._provider.create(system=system, messages=messages, tools=tools, max_tokens=higher)
