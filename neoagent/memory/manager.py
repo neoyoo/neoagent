@@ -43,6 +43,7 @@ class MemoryManager:
         if extracted > 0:
             logger.info("Stored %d memory item(s)", extracted)
             self._tool_calls_count = 0
+            self._initial_token_estimate = current_tokens  # Reset baseline
 
     def build_prompt_section(self, query: str | None = None) -> str:
         return self._retriever.retrieve(query)

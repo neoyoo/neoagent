@@ -98,12 +98,18 @@ class MemoryExtractor:
             logger.warning("Memory extraction failed: %s", exc)
             return 0
 
+        import re as _re
         stored = 0
         for item in items:
             filename = item.get("filename", "").strip()
             description = item.get("description", "").strip()
             content = item.get("content", "").strip()
             if not filename or not description or not content:
+                continue
+            # Sanitize: reject path traversal, keep only safe characters
+            if "/" in filename or ".." in filename or "\\" in filename:
+                continue
+            if not _re.match(r'^[a-zA-Z0-9_\-]+\.md$', filename):
                 continue
             self._store.write_topic(filename, content)
             stored += 1

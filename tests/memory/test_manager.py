@@ -72,3 +72,28 @@ async def test_maybe_extract_triggers_on_high_tool_calls(tmp_path: Path) -> None
     manager.record_tool_calls(5)
     await manager.maybe_extract(_msgs(), current_tokens=600)
     assert store.read_topic("g.md") != ""
+
+
+@pytest.mark.asyncio
+async def test_maybe_extract_resets_token_baseline(tmp_path: Path) -> None:
+    """After successful extraction, _initial_token_estimate must be updated to
+    current_tokens so token_delta resets to zero, preventing runaway extractions."""
+    items = [{"filename": "g.md", "description": "goals", "content": "# G\n- x\n"}]
+    provider = _make_provider(json.dumps(items))
+    store = MemoryStore(tmp_path)
+    manager = MemoryManager(store, provider)
+
+    # Establish baseline at 1000 tokens
+    await manager.maybe_extract(_msgs(), current_tokens=1000)
+    assert manager._initial_token_estimate == 1000
+
+    # Trigger extraction via tool_calls threshold at 5000 tokens
+    manager.record_tool_calls(5)
+    await manager.maybe_extract(_msgs(), current_tokens=5000)
+
+    # Baseline must have been reset to 5000, not remain at 1000
+    assert manager._initial_token_estimate == 5000, (
+        f"Expected baseline reset to 5000 after extraction, got {manager._initial_token_estimate}"
+    )
+    # tool_calls_count must also be reset
+    assert manager._tool_calls_count == 0

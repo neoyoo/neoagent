@@ -137,4 +137,11 @@ class ContextCompressor:
                 clean.append(b)
             if clean:
                 sanitized.append(Message(role=msg.role, content=clean))
-        return sanitized
+        # Ensure role alternation — insert placeholder if needed
+        result: list[Message] = []
+        for msg in sanitized:
+            if result and msg.role == result[-1].role:
+                placeholder_role = "user" if msg.role == "assistant" else "assistant"
+                result.append(Message(role=placeholder_role, content="(context removed during compression)"))
+            result.append(msg)
+        return result

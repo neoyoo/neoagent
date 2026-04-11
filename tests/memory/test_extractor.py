@@ -82,3 +82,54 @@ async def test_extract_rebuilds_index(store: MemoryStore) -> None:
     await extractor.extract(_msgs(), tool_calls_count=5, token_delta=0)
     index = store.read_index()
     assert "ctx.md" in index
+
+
+@pytest.mark.asyncio
+async def test_extract_rejects_path_traversal_filename(store: MemoryStore) -> None:
+    """Filenames with '../' must be silently rejected — nothing stored."""
+    items = [{"filename": "../../evil.md", "description": "x", "content": "y"}]
+    provider = _make_provider(json.dumps(items))
+    extractor = MemoryExtractor(provider, store)
+    result = await extractor.extract(_msgs(), tool_calls_count=5, token_delta=0)
+    assert result == 0
+
+
+@pytest.mark.asyncio
+async def test_extract_rejects_slash_in_filename(store: MemoryStore) -> None:
+    """Filenames containing '/' (directory separator) must be rejected."""
+    items = [{"filename": "sub/file.md", "description": "x", "content": "y"}]
+    provider = _make_provider(json.dumps(items))
+    extractor = MemoryExtractor(provider, store)
+    result = await extractor.extract(_msgs(), tool_calls_count=5, token_delta=0)
+    assert result == 0
+
+
+@pytest.mark.asyncio
+async def test_extract_rejects_backslash_in_filename(store: MemoryStore) -> None:
+    """Filenames containing backslash must be rejected."""
+    items = [{"filename": "sub\\file.md", "description": "x", "content": "y"}]
+    provider = _make_provider(json.dumps(items))
+    extractor = MemoryExtractor(provider, store)
+    result = await extractor.extract(_msgs(), tool_calls_count=5, token_delta=0)
+    assert result == 0
+
+
+@pytest.mark.asyncio
+async def test_extract_rejects_non_md_extension(store: MemoryStore) -> None:
+    """Only filenames matching r'^[a-zA-Z0-9_\\-]+\\.md$' should be accepted."""
+    items = [{"filename": "evil.sh", "description": "x", "content": "y"}]
+    provider = _make_provider(json.dumps(items))
+    extractor = MemoryExtractor(provider, store)
+    result = await extractor.extract(_msgs(), tool_calls_count=5, token_delta=0)
+    assert result == 0
+
+
+@pytest.mark.asyncio
+async def test_extract_accepts_valid_filename(store: MemoryStore) -> None:
+    """Safe filenames (snake_case .md) should be accepted and stored."""
+    items = [{"filename": "user_prefs.md", "description": "user prefs", "content": "# Prefs\n"}]
+    provider = _make_provider(json.dumps(items))
+    extractor = MemoryExtractor(provider, store)
+    result = await extractor.extract(_msgs(), tool_calls_count=5, token_delta=0)
+    assert result == 1
+    assert store.read_topic("user_prefs.md") != ""

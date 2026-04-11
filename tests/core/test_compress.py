@@ -193,6 +193,35 @@ async def test_iterative_summary_updates_previous_summary() -> None:
     assert compressor._previous_summary == new_summary
 
 
+def test_sanitize_tool_pairs_maintains_role_alternation() -> None:
+    """When filtering drops a user message between two assistant messages,
+    a placeholder must be inserted to preserve alternating roles."""
+    c = ContextCompressor(provider=_make_provider())
+    # Two assistant messages with no user in between (after orphan filtering).
+    # Construct: assistant(orphan_use) + user(orphan_result) + assistant(text)
+    # After filtering, orphan_use and orphan_result are removed, leaving
+    # assistant (empty → dropped) and assistant("done"), preceded by user("go").
+    # Simpler: supply two assistant text messages back-to-back directly.
+    msgs = [
+        _user("go"),
+        _assistant("first"),
+        _assistant("second"),  # consecutive same role — needs placeholder
+    ]
+    result = c._sanitize_tool_pairs(msgs)
+    roles = [m.role for m in result]
+    # No two consecutive messages should share the same role
+    for i in range(1, len(roles)):
+        assert roles[i] != roles[i - 1], (
+            f"Role alternation violated at index {i}: {roles}"
+        )
+    # Both assistant messages should still be present
+    assistant_texts = [
+        m.content for m in result if m.role == "assistant" and isinstance(m.content, str)
+    ]
+    assert "first" in assistant_texts
+    assert "second" in assistant_texts
+
+
 def test_reset_session_state_clears_previous_summary() -> None:
     provider = _make_provider("summary text")
     compressor = ContextCompressor(provider=provider)
