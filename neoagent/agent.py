@@ -23,7 +23,7 @@ class NeoAgent:
         self._config = config
         self._provider = _create_provider(config)
         self._permission = PermissionChecker()
-        self._registry = ToolRegistry(max_result_size=config.max_result_size)
+        self._registry = ToolRegistry(max_result_size=config.max_result_size, permission_checker=self._permission)
         self._prompt_builder = PromptBuilder()
         self._prompt_builder.add_section(PromptSection(
             name="identity",

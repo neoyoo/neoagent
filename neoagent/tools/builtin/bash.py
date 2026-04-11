@@ -1,8 +1,19 @@
 from __future__ import annotations
 import asyncio
+import re
 from pydantic import BaseModel
 from neoagent.tools.base import BaseTool
 from neoagent.core.types import ToolResult
+
+_DEFAULT_BLOCKED_PATTERNS = [
+    r"\brm\s+(-[a-zA-Z]*f|-[a-zA-Z]*r|--force|--recursive)\b",  # rm -rf, rm -f
+    r"\bchmod\s+777\b",
+    r"\bmkfs\b",
+    r"\bdd\s+.*of=/dev/",
+    r">\s*/dev/sd",
+    r"\b(curl|wget)\b.*\|\s*(ba)?sh",  # curl | sh
+]
+
 
 class BashInput(BaseModel):
     command: str
@@ -15,8 +26,20 @@ class BashTool(BaseTool):
     permission: str = "ask"
     is_concurrent_safe: bool = False
 
+    def __init__(self, blocked_patterns: list[str] | None = None):
+        self._blocked_patterns: list[str] = (
+            blocked_patterns if blocked_patterns is not None else _DEFAULT_BLOCKED_PATTERNS
+        )
+
     async def execute(self, input: BaseModel) -> ToolResult:
         assert isinstance(input, BashInput)
+        for pattern in self._blocked_patterns:
+            if re.search(pattern, input.command):
+                return ToolResult(
+                    call_id="",
+                    output=f"Command blocked by safety filter: matches pattern {pattern!r}",
+                    is_error=True,
+                )
         try:
             proc = await asyncio.create_subprocess_shell(
                 input.command,

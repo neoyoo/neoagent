@@ -2,12 +2,18 @@ from __future__ import annotations
 import asyncio
 from neoagent.core.types import ToolCall, ToolResult
 from neoagent.tools.base import BaseTool
+from neoagent.tools.permission import PermissionChecker
 
 
 class ToolRegistry:
-    def __init__(self, max_result_size: int = 50000):
+    def __init__(
+        self,
+        max_result_size: int = 50000,
+        permission_checker: PermissionChecker | None = None,
+    ):
         self._tools: dict[str, BaseTool] = {}
         self.max_result_size = max_result_size
+        self._permission_checker = permission_checker or PermissionChecker()
 
     def register(self, tool: BaseTool) -> None:
         if tool.name in self._tools:
@@ -56,6 +62,13 @@ class ToolRegistry:
             return idx, ToolResult(call_id=call.id, output=f"Tool not found: {call.name}", is_error=True)
         try:
             validated_input = tool.input_model.model_validate(call.input)
+            allowed = await self._permission_checker.check(tool, validated_input)
+            if not allowed:
+                if tool.permission == "deny":
+                    msg = f"Permission denied: tool '{tool.name}' is disabled"
+                else:
+                    msg = f"Permission denied: tool '{tool.name}' requires user approval"
+                return idx, ToolResult(call_id=call.id, output=msg, is_error=True)
             result = await tool.execute(validated_input)
             result.call_id = call.id
             if len(result.output) > self.max_result_size:
