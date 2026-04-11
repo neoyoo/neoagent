@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import re
+from pathlib import Path
 from pydantic import BaseModel
 from neoagent.tools.base import BaseTool
 from neoagent.core.types import ToolResult
@@ -12,6 +13,13 @@ _DEFAULT_BLOCKED_PATTERNS = [
     r"\bdd\s+.*of=/dev/",
     r">\s*/dev/sd",
     r"\b(curl|wget)\b.*\|\s*(ba)?sh",  # curl | sh
+    r"\bpython[23]?\s+-(c|m)\b",       # python -c / python3 -c / python -m
+    r"\bperl\s+-e\b",                   # perl -e
+    r"\bruby\s+-e\b",                   # ruby -e
+    r"\bnode\s+-e\b",                   # node -e
+    r"\bsh\s+-c\b",                     # sh -c
+    r"\bbash\s+-c\b",                   # bash -c
+    r"\beval\s+",                       # eval anything
 ]
 
 
@@ -26,10 +34,11 @@ class BashTool(BaseTool):
     permission: str = "ask"
     is_concurrent_safe: bool = False
 
-    def __init__(self, blocked_patterns: list[str] | None = None):
+    def __init__(self, blocked_patterns: list[str] | None = None, cwd: Path | None = None):
         self._blocked_patterns: list[str] = (
             blocked_patterns if blocked_patterns is not None else _DEFAULT_BLOCKED_PATTERNS
         )
+        self._cwd = cwd
 
     async def execute(self, input: BaseModel) -> ToolResult:
         assert isinstance(input, BashInput)
@@ -45,6 +54,7 @@ class BashTool(BaseTool):
                 input.command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                cwd=str(self._cwd) if self._cwd else None,
             )
             try:
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=input.timeout)
