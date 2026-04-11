@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import pytest
+from unittest.mock import patch, MagicMock
 from neoagent.hooks import (
     HookResult,
     HookManager,
@@ -11,6 +12,14 @@ from neoagent.hooks import (
 )
 from neoagent.core.types import Message, TextBlock
 from neoagent.providers.base import Response
+from neoagent.config import NeoAgentConfig
+from neoagent.agent import NeoAgent
+
+
+def _make_mock_provider():
+    mock = MagicMock()
+    mock.get_context_window.return_value = 200_000
+    return mock
 
 
 # ── HookResult construction ───────────────────────────────────────────────────
@@ -382,3 +391,110 @@ async def test_handler_exception_skipped_post():
     result = await mgr.run_post("post_tool_call", _make_post_event())
     assert calls == ["ok"]
     assert result.action == "allow"
+
+
+# ── NeoAgent hook API tests ───────────────────────────────────────────────────
+
+def _make_agent() -> NeoAgent:
+    config = NeoAgentConfig(api_key="test-key", model="claude-3-5-haiku-20241022")
+    return NeoAgent(config)
+
+
+@patch("neoagent.agent._create_provider")
+def test_agent_has_hook_manager(mock_create):
+    mock_create.return_value = _make_mock_provider()
+    agent = _make_agent()
+    assert isinstance(agent._hook_manager, HookManager)
+
+
+@patch("neoagent.agent._create_provider")
+def test_agent_hook_registers_handler(mock_create):
+    mock_create.return_value = _make_mock_provider()
+    agent = _make_agent()
+
+    async def handler(event):
+        return HookResult.allow()
+
+    agent.hook("pre_tool_call", handler)
+    entries = agent._hook_manager._hooks.get("pre_tool_call", [])
+    assert len(entries) == 1
+
+
+@patch("neoagent.agent._create_provider")
+def test_agent_unhook_removes_handler(mock_create):
+    mock_create.return_value = _make_mock_provider()
+    agent = _make_agent()
+
+    async def handler(event):
+        return HookResult.allow()
+
+    agent.hook("pre_tool_call", handler)
+    agent.unhook("pre_tool_call", handler)
+    entries = agent._hook_manager._hooks.get("pre_tool_call", [])
+    assert len(entries) == 0
+
+
+@patch("neoagent.agent._create_provider")
+def test_agent_hook_priority_forwarded(mock_create):
+    mock_create.return_value = _make_mock_provider()
+    agent = _make_agent()
+
+    async def handler(event):
+        return HookResult.allow()
+
+    agent.hook("pre_tool_call", handler, priority=99)
+    entries = agent._hook_manager._hooks.get("pre_tool_call", [])
+    assert entries[0].priority == 99
+
+
+@patch("neoagent.agent._create_provider")
+def test_agent_on_decorator_registers(mock_create):
+    mock_create.return_value = _make_mock_provider()
+    agent = _make_agent()
+
+    @agent.on("pre_tool_call")
+    async def handler(event):
+        return HookResult.allow()
+
+    entries = agent._hook_manager._hooks.get("pre_tool_call", [])
+    assert len(entries) == 1
+
+
+@patch("neoagent.agent._create_provider")
+def test_agent_on_decorator_returns_original_function(mock_create):
+    mock_create.return_value = _make_mock_provider()
+    agent = _make_agent()
+
+    async def handler(event):
+        return HookResult.allow()
+
+    decorated = agent.on("pre_tool_call")(handler)
+    assert decorated is handler
+
+
+@patch("neoagent.agent._create_provider")
+def test_agent_on_decorator_priority(mock_create):
+    mock_create.return_value = _make_mock_provider()
+    agent = _make_agent()
+
+    @agent.on("pre_tool_call", priority=42)
+    async def handler(event):
+        return HookResult.allow()
+
+    entries = agent._hook_manager._hooks.get("pre_tool_call", [])
+    assert entries[0].priority == 42
+
+
+@patch("neoagent.agent._create_provider")
+def test_agent_on_decorator_syntax_equivalent_to_hook(mock_create):
+    mock_create.return_value = _make_mock_provider()
+    agent = _make_agent()
+
+    async def handler(event):
+        return HookResult.allow()
+
+    agent.hook("pre_tool_call", handler, priority=5)
+    entries_hook = agent._hook_manager._hooks.get("pre_tool_call", [])
+    assert len(entries_hook) == 1
+    assert entries_hook[0].priority == 5
+    assert entries_hook[0].handler is handler

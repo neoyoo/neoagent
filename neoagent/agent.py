@@ -4,6 +4,7 @@ from neoagent.core.loop import QueryLoop
 from neoagent.core.prompt import PromptBuilder, PromptSection
 from neoagent.core.types import ConversationResult, Message, TextBlock
 from neoagent.events import EventBus
+from neoagent.hooks import HookManager, HookType, HookHandler
 from neoagent.providers.base import Provider
 from neoagent.session import JsonFileStorage, Session, SessionStorage
 from neoagent.tools.base import BaseTool
@@ -28,6 +29,7 @@ class NeoAgent:
         self._permission = PermissionChecker(auto_approve=config.auto_approve_tools)
         self._registry = ToolRegistry()
         self._event_bus = EventBus()
+        self._hook_manager = HookManager()
         self._executor = ToolExecutor(
             registry=self._registry,
             permission_checker=self._permission,
@@ -187,3 +189,31 @@ class NeoAgent:
         if self._observer is not None:
             self._observer.close()
             self._observer = None
+
+    # ── Hook API ──────────────────────────────────────────────────────────────
+
+    def hook(self, hook_type: HookType, handler: HookHandler, priority: int = 0) -> None:
+        """Register *handler* to be called for *hook_type* lifecycle events.
+
+        Lower *priority* values run first (default 0). Same-priority handlers
+        run in registration order.
+        """
+        self._hook_manager.register(hook_type, handler, priority)
+
+    def on(self, hook_type: HookType, priority: int = 0):
+        """Decorator form of hook(). Returns the original function unchanged.
+
+        Usage::
+
+            @agent.on("pre_tool_call")
+            async def my_handler(event):
+                return HookResult.allow()
+        """
+        def decorator(fn: HookHandler) -> HookHandler:
+            self._hook_manager.register(hook_type, fn, priority)
+            return fn
+        return decorator
+
+    def unhook(self, hook_type: HookType, handler: HookHandler) -> None:
+        """Unregister *handler* from *hook_type*. No-op if not registered."""
+        self._hook_manager.unregister(hook_type, handler)
