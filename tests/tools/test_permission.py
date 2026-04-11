@@ -46,8 +46,16 @@ class TestPermissionChecker:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_ask_no_callback_defaults_true(self):
+    async def test_ask_no_callback_defaults_false(self):
+        """Default auto_approve=False: ask-level tools are denied when no callback is set."""
         checker = PermissionChecker()
+        result = await checker.check(AskTool(), DummyInput(x="hi"))
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_ask_no_callback_auto_approve_true(self):
+        """Explicit auto_approve=True keeps original behaviour (non-interactive opt-in)."""
+        checker = PermissionChecker(auto_approve=True)
         result = await checker.check(AskTool(), DummyInput(x="hi"))
         assert result is True
 

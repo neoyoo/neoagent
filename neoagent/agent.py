@@ -22,7 +22,7 @@ class NeoAgent:
     def __init__(self, config: NeoAgentConfig) -> None:
         self._config = config
         self._provider = _create_provider(config)
-        self._permission = PermissionChecker()
+        self._permission = PermissionChecker(auto_approve=True)  # explicit opt-in for non-interactive
         self._registry = ToolRegistry(max_result_size=config.max_result_size, permission_checker=self._permission)
         self._prompt_builder = PromptBuilder()
         self._prompt_builder.add_section(PromptSection(
@@ -89,6 +89,10 @@ class NeoAgent:
         """Enable framework-level logging. Returns the Observer for manual close()."""
         from neoagent.observe import Observer
         from pathlib import Path as _Path
+
+        # Close existing observer if any to avoid file-handle leaks
+        if hasattr(self._loop, '_observer') and self._loop._observer:
+            self._loop._observer.close()
 
         if log_dir is None:
             log_dir = _Path.cwd() / "logs"

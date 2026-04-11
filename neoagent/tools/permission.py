@@ -13,7 +13,7 @@ class PermissionChecker:
     def __init__(
         self,
         ask_callback: AskCallback | None = None,
-        auto_approve: bool = True,
+        auto_approve: bool = False,
     ):
         self._ask_callback = ask_callback
         self._auto_approve = auto_approve
