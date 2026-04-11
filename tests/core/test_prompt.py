@@ -98,3 +98,55 @@ class TestPromptBuilder:
         # Expected order: s1(static,1) → s2(static,5) → d1(dynamic,1) → d2(dynamic,5)
         positions = {name: result.index(f"# {name}") for name in ["s1", "s2", "d1", "d2"]}
         assert positions["s1"] < positions["s2"] < positions["d1"] < positions["d2"]
+
+
+# --- v2 skill lazy loading tests ---
+
+def test_register_skill_does_not_appear_in_build() -> None:
+    pb = PromptBuilder()
+    section = PromptSection(name="skill_a", content="skill content", priority=10)
+    pb.register_skill("skill_a", section)
+    result = pb.build()
+    assert "skill content" not in result
+
+
+def test_activate_skill_appears_in_build() -> None:
+    pb = PromptBuilder()
+    section = PromptSection(name="skill_a", content="skill content", priority=10)
+    pb.register_skill("skill_a", section)
+    pb.activate_skill("skill_a")
+    assert "skill content" in pb.build()
+
+
+def test_deactivate_skill_removed_from_build() -> None:
+    pb = PromptBuilder()
+    section = PromptSection(name="skill_a", content="skill content", priority=10)
+    pb.register_skill("skill_a", section)
+    pb.activate_skill("skill_a")
+    pb.deactivate_skill("skill_a")
+    assert "skill content" not in pb.build()
+
+
+def test_is_skill_active_returns_correct_state() -> None:
+    pb = PromptBuilder()
+    section = PromptSection(name="skill_a", content="x", priority=10)
+    pb.register_skill("skill_a", section)
+    assert not pb.is_skill_active("skill_a")
+    pb.activate_skill("skill_a")
+    assert pb.is_skill_active("skill_a")
+    pb.deactivate_skill("skill_a")
+    assert not pb.is_skill_active("skill_a")
+
+
+def test_activate_unknown_skill_raises() -> None:
+    pb = PromptBuilder()
+    with pytest.raises(ValueError, match="not registered"):
+        pb.activate_skill("unknown_skill")
+
+
+def test_register_duplicate_skill_raises() -> None:
+    pb = PromptBuilder()
+    section = PromptSection(name="skill_a", content="x", priority=10)
+    pb.register_skill("skill_a", section)
+    with pytest.raises(ValueError, match="already registered"):
+        pb.register_skill("skill_a", section)
