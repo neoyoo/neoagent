@@ -11,6 +11,11 @@ from neoagent.tools.base import BaseTool
 from neoagent.tools.executor import ToolExecutor
 from neoagent.tools.permission import PermissionChecker
 from neoagent.tools.registry import ToolRegistry
+from neoagent.tools.deferred import DeferredToolRegistry
+from neoagent.tools.builtin.tool_search import ToolSearchTool
+from neoagent.mcp.transport import StdioTransport
+from neoagent.mcp.client import MCPClient
+from neoagent.mcp.tool import create_mcp_tools
 
 
 def _create_provider(config: NeoAgentConfig) -> Provider:
@@ -30,6 +35,8 @@ class NeoAgent:
         self._registry = ToolRegistry()
         self._event_bus = EventBus()
         self._hook_manager = HookManager()
+        self._deferred_registry = DeferredToolRegistry()
+        self._mcp_clients: dict[str, object] = {}
         self._executor = ToolExecutor(
             registry=self._registry,
             permission_checker=self._permission,
@@ -52,6 +59,7 @@ class NeoAgent:
             context_budget=config.context_budget,
             event_bus=self._event_bus,
             hook_manager=self._hook_manager,
+            deferred_registry=self._deferred_registry,
         )
         self._observer = None
         self._observer_subscriber = None
@@ -219,3 +227,82 @@ class NeoAgent:
     def unhook(self, hook_type: HookType, handler: HookHandler) -> None:
         """Unregister *handler* from *hook_type*. No-op if not registered."""
         self._hook_manager.unregister(hook_type, handler)
+
+    # ── MCP API ──────────────────────────────────────────────────────────────
+
+    async def add_mcp_server(
+        self,
+        name: str,
+        command: list[str],
+        env: dict[str, str] | None = None,
+    ) -> None:
+        """Connect to an MCP server and register its tools.
+
+        Creates a StdioTransport subprocess, performs the MCP initialize
+        handshake, fetches the tool list, wraps each as MCPTool, registers
+        them to ToolRegistry (for execution) and DeferredToolRegistry (for
+        deferred loading).
+
+        On the first call, also auto-registers the tool_search built-in tool
+        so the LLM can discover and promote deferred tools.
+
+        Args:
+            name:    Logical server name used as tool name prefix (e.g. "github").
+            command: Subprocess command (e.g. ["npx", "@anthropic/mcp-server-github"]).
+            env:     Optional extra env vars forwarded to the subprocess (merged
+                     into the whitelist-filtered env). Use for tokens/secrets.
+        """
+        transport = StdioTransport(command=command, env=env)
+        client = MCPClient(name=name, transport=transport)
+        await client.connect()
+
+        tools = await create_mcp_tools(client=client, server_name=name)
+        for tool in tools:
+            self._registry.register(tool)
+            self._deferred_registry.register(tool.name, tool.description)
+
+        self._mcp_clients[name] = client
+
+        # Auto-register tool_search on first MCP server
+        if len(self._mcp_clients) == 1:
+            tool_search = ToolSearchTool(
+                deferred_registry=self._deferred_registry,
+                tool_registry=self._registry,
+            )
+            self._registry.register(tool_search)
+
+    async def remove_mcp_server(self, name: str) -> None:
+        """Disconnect from an MCP server and unregister its tools.
+
+        Args:
+            name: Logical server name as passed to add_mcp_server().
+        """
+        client = self._mcp_clients.pop(name, None)
+        if client is None:
+            return
+
+        # Remove tools with this server's prefix from ToolRegistry
+        prefix = f"{name}__"
+        tools_to_remove = [
+            tool_name
+            for tool_name in self._registry.all_tools()
+            if tool_name.startswith(prefix)
+        ]
+        for tool_name in tools_to_remove:
+            self._registry._tools.pop(tool_name, None)
+
+        await client.close()
+
+    def list_mcp_servers(self) -> list[str]:
+        """Return the names of all connected MCP servers."""
+        return list(self._mcp_clients.keys())
+
+    async def close(self) -> None:
+        """Close all MCP connections.
+
+        Call this when the agent is being shut down to ensure MCP server
+        subprocesses are terminated cleanly.
+        """
+        for client in list(self._mcp_clients.values()):
+            await client.close()
+        self._mcp_clients.clear()

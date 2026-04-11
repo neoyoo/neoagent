@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from neoagent.session import Session, SessionState
     from neoagent.tools.executor import ToolExecutor
     from neoagent.hooks import HookManager
+    from neoagent.tools.deferred import DeferredToolRegistry
 
 from neoagent.core.prompt import PromptBuilder
 from neoagent.core.types import ConversationResult, Message, TextBlock, ToolCall, ToolResult, ToolResultBlock, ToolUseBlock, Turn
@@ -33,7 +34,8 @@ class QueryLoop:
                  memory_manager: "MemoryManager | None" = None,
                  event_bus: EventBus | None = None,
                  tool_executor: "ToolExecutor | None" = None,
-                 hook_manager: "HookManager | None" = None):
+                 hook_manager: "HookManager | None" = None,
+                 deferred_registry: "DeferredToolRegistry | None" = None):
         self._provider = provider
         self._registry = tool_registry
         self._executor = tool_executor
@@ -45,6 +47,7 @@ class QueryLoop:
         self._memory_manager = memory_manager
         self._bus = event_bus if event_bus is not None else EventBus()
         self._hook_manager = hook_manager
+        self._deferred_registry = deferred_registry
 
     async def run(
         self,
@@ -108,6 +111,22 @@ class QueryLoop:
                         previous_summary=old_summary,
                     ))
             system = self._prompt_builder.build()
+
+            # MCP deferred loading: filter schemas + inject deferred names into system prompt
+            if self._deferred_registry:
+                schemas = [
+                    s for s in schemas
+                    if not self._deferred_registry.is_deferred(s["name"])
+                ]
+                deferred_names = self._deferred_registry.get_deferred_names()
+                if deferred_names:
+                    deferred_section = (
+                        "\n\n<deferred-tools>\n"
+                        + "\n".join(deferred_names)
+                        + "\n</deferred-tools>"
+                    )
+                    system = system + deferred_section
+
             self._bus.emit(ProviderRequestEvent(
                 system=system, messages=tuple(msgs),
                 tools=tuple(schemas), turn=turn_idx,
