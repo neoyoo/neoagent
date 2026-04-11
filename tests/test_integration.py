@@ -112,7 +112,7 @@ class TestToolCallFlow:
             _text_resp("I read the file."),
         ])
         registry = ToolRegistry()
-        registry.register(ReadTool())
+        registry.register(ReadTool(allowed_directories=[tmp_path]))
         builder = PromptBuilder()
         builder.add_section(PromptSection(name="sys", content="Help.", priority=0))
         loop = QueryLoop(provider=provider, tool_registry=registry, prompt_builder=builder)

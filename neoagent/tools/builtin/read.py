@@ -1,7 +1,9 @@
 from __future__ import annotations
+from pathlib import Path
 from pydantic import BaseModel
 from neoagent.tools.base import BaseTool
 from neoagent.core.types import ToolResult
+from neoagent.tools.pathguard import validate_path
 
 
 class ReadInput(BaseModel):
@@ -17,8 +19,16 @@ class ReadTool(BaseTool):
     permission: str = "auto"
     is_concurrent_safe: bool = True
 
+    def __init__(self, allowed_directories: list[Path] | None = None, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._allowed = allowed_directories or [Path.cwd()]
+
     async def execute(self, input: BaseModel) -> ToolResult:
         assert isinstance(input, ReadInput)
+        try:
+            validate_path(input.file_path, self._allowed)
+        except ValueError as e:
+            return ToolResult(call_id="", output=str(e), is_error=True)
         try:
             with open(input.file_path, "r") as f:
                 all_lines = f.readlines()

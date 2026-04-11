@@ -3,10 +3,13 @@ from pathlib import Path
 from pydantic import BaseModel
 from neoagent.tools.base import BaseTool
 from neoagent.core.types import ToolResult
+from neoagent.tools.pathguard import validate_path
+
 
 class GlobInput(BaseModel):
     pattern: str
     path: str = "."
+
 
 class GlobTool(BaseTool):
     name: str = "glob"
@@ -15,8 +18,16 @@ class GlobTool(BaseTool):
     permission: str = "auto"
     is_concurrent_safe: bool = True
 
+    def __init__(self, allowed_directories: list[Path] | None = None, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._allowed = allowed_directories or [Path.cwd()]
+
     async def execute(self, input: BaseModel) -> ToolResult:
         assert isinstance(input, GlobInput)
+        try:
+            validate_path(input.path, self._allowed)
+        except ValueError as e:
+            return ToolResult(call_id="", output=str(e), is_error=True)
         try:
             base = Path(input.path)
             if not base.exists():
