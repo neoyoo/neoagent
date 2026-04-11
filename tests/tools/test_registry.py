@@ -1,15 +1,15 @@
 from __future__ import annotations
-import asyncio
 import pytest
 from pydantic import BaseModel
 from neoagent.tools.base import BaseTool
 from neoagent.tools.registry import ToolRegistry
-from neoagent.tools.permission import PermissionChecker
-from neoagent.core.types import ToolCall, ToolResult
+from neoagent.core.types import ToolResult
+
 
 class AddInput(BaseModel):
     a: int
     b: int
+
 
 class AddTool(BaseTool):
     name: str = "add"
@@ -17,43 +17,20 @@ class AddTool(BaseTool):
     input_model: type[BaseModel] = AddInput
     permission: str = "auto"
     is_concurrent_safe: bool = True
+
     async def execute(self, input: BaseModel) -> ToolResult:
         return ToolResult(call_id="x", output=str(input.a + input.b))
 
-class SlowTool(BaseTool):
-    name: str = "slow"
-    description: str = "Slow tool for concurrency test"
-    input_model: type[BaseModel] = AddInput
-    permission: str = "auto"
-    is_concurrent_safe: bool = True
-    async def execute(self, input: BaseModel) -> ToolResult:
-        await asyncio.sleep(0.1)
-        return ToolResult(call_id="x", output="slow_done")
-
-class UnsafeTool(BaseTool):
-    name: str = "unsafe"
-    description: str = "Not concurrent safe"
-    input_model: type[BaseModel] = AddInput
-    permission: str = "auto"
-    is_concurrent_safe: bool = False
-    async def execute(self, input: BaseModel) -> ToolResult:
-        return ToolResult(call_id="x", output="unsafe_done")
 
 class DenyTool(BaseTool):
     name: str = "denied"
     description: str = "Denied tool"
     input_model: type[BaseModel] = AddInput
     permission: str = "deny"
+
     async def execute(self, input: BaseModel) -> ToolResult:
         return ToolResult(call_id="x", output="should not run")
 
-class ErrorTool(BaseTool):
-    name: str = "error"
-    description: str = "Always errors"
-    input_model: type[BaseModel] = AddInput
-    permission: str = "auto"
-    async def execute(self, input: BaseModel) -> ToolResult:
-        raise RuntimeError("boom")
 
 class TestToolRegistryRegister:
     def test_register_and_get(self):
@@ -70,6 +47,7 @@ class TestToolRegistryRegister:
         reg.register(AddTool())
         with pytest.raises(ValueError):
             reg.register(AddTool())
+
 
 class TestToolRegistrySchemas:
     def test_get_schemas_returns_registered(self):
@@ -88,190 +66,43 @@ class TestToolRegistrySchemas:
         assert "add" in names
         assert "denied" not in names
 
-class TestToolRegistryExecute:
-    @pytest.mark.asyncio
-    async def test_execute_single_tool(self):
+
+class TestAllTools:
+    def test_all_tools_returns_dict(self):
         reg = ToolRegistry()
         reg.register(AddTool())
-        calls = [ToolCall(id="c1", name="add", input={"a": 2, "b": 3})]
-        results = await reg.execute(calls)
-        assert len(results) == 1
-        assert results[0].output == "5"
-        assert results[0].call_id == "c1"
-
-    @pytest.mark.asyncio
-    async def test_execute_unknown_tool(self):
-        reg = ToolRegistry()
-        calls = [ToolCall(id="c1", name="unknown", input={})]
-        results = await reg.execute(calls)
-        assert len(results) == 1
-        assert results[0].is_error is True
-        assert "unknown" in results[0].output.lower() or "not found" in results[0].output.lower()
-
-    @pytest.mark.asyncio
-    async def test_execute_tool_exception(self):
-        reg = ToolRegistry()
-        reg.register(ErrorTool())
-        calls = [ToolCall(id="c1", name="error", input={"a": 1, "b": 2})]
-        results = await reg.execute(calls)
-        assert results[0].is_error is True
-        assert "boom" in results[0].output
-
-    @pytest.mark.asyncio
-    async def test_concurrent_safe_tools_run_parallel(self):
-        reg = ToolRegistry()
-        reg.register(SlowTool())
-        # Two slow calls should run in parallel (~0.1s not ~0.2s)
-        calls = [
-            ToolCall(id="c1", name="slow", input={"a": 1, "b": 1}),
-            ToolCall(id="c2", name="slow", input={"a": 2, "b": 2}),
-        ]
-        import time
-        start = time.monotonic()
-        results = await reg.execute(calls)
-        elapsed = time.monotonic() - start
-        assert len(results) == 2
-        assert elapsed < 0.18  # parallel, not serial
-
-    @pytest.mark.asyncio
-    async def test_unsafe_tools_run_serial(self):
-        reg = ToolRegistry()
-        reg.register(UnsafeTool())
-        calls = [
-            ToolCall(id="c1", name="unsafe", input={"a": 1, "b": 1}),
-            ToolCall(id="c2", name="unsafe", input={"a": 2, "b": 2}),
-        ]
-        results = await reg.execute(calls)
-        assert len(results) == 2
-
-    @pytest.mark.asyncio
-    async def test_result_truncation(self):
-        class BigTool(BaseTool):
-            name: str = "big"
-            description: str = "Returns big output"
-            input_model: type[BaseModel] = AddInput
-            permission: str = "auto"
-            async def execute(self, input: BaseModel) -> ToolResult:
-                return ToolResult(call_id="x", output="x" * 100000)
-        reg = ToolRegistry(max_result_size=1000)
-        reg.register(BigTool())
-        calls = [ToolCall(id="c1", name="big", input={"a": 1, "b": 1})]
-        results = await reg.execute(calls)
-        assert len(results[0].output) <= 1100  # some overhead for truncation notice
-        assert "[truncated]" in results[0].output
-
-
-class TestToolRegistryPermissions:
-    """Tests that PermissionChecker is correctly wired into ToolRegistry."""
-
-    @pytest.mark.asyncio
-    async def test_deny_tool_blocked_by_permission_checker(self):
-        """Tools with permission='deny' must not execute; registry returns error."""
-        reg = ToolRegistry()
         reg.register(DenyTool())
-        calls = [ToolCall(id="c1", name="denied", input={"a": 1, "b": 2})]
-        results = await reg.execute(calls)
-        assert results[0].is_error is True
-        assert "denied" in results[0].output.lower() or "permission" in results[0].output.lower()
+        all_tools = reg.all_tools()
+        assert "add" in all_tools
+        assert "denied" in all_tools
+        assert len(all_tools) == 2
 
-    @pytest.mark.asyncio
-    async def test_auto_tool_executes_without_approval(self):
-        """Tools with permission='auto' should execute freely."""
+    def test_all_tools_empty_registry(self):
         reg = ToolRegistry()
-        reg.register(AddTool())
-        calls = [ToolCall(id="c1", name="add", input={"a": 10, "b": 5})]
-        results = await reg.execute(calls)
-        assert results[0].is_error is False
-        assert results[0].output == "15"
+        assert reg.all_tools() == {}
 
-    @pytest.mark.asyncio
-    async def test_ask_tool_blocked_when_callback_denies(self):
-        """Ask tools should be blocked when the ask_callback returns False."""
-        class AskTool(BaseTool):
-            name: str = "ask_op"
-            description: str = "Needs approval"
-            input_model: type[BaseModel] = AddInput
-            permission: str = "ask"
-            is_concurrent_safe: bool = False
-            async def execute(self, input: BaseModel) -> ToolResult:
-                return ToolResult(call_id="x", output="ran")
 
-        async def deny_all(name, desc, data):
-            return False
+# ── Registry purity tests (Task 6) ───────────────────────────────────────────
 
-        checker = PermissionChecker(ask_callback=deny_all)
-        reg = ToolRegistry(permission_checker=checker)
-        reg.register(AskTool())
-        calls = [ToolCall(id="c1", name="ask_op", input={"a": 1, "b": 2})]
-        results = await reg.execute(calls)
-        assert results[0].is_error is True
-        assert "permission" in results[0].output.lower()
+def test_registry_has_no_execute_method():
+    """After Task 6, ToolRegistry must not have execute()."""
+    from neoagent.tools.registry import ToolRegistry
+    r = ToolRegistry()
+    assert not hasattr(r, 'execute'), \
+        "execute() must be removed from ToolRegistry — it belongs in ToolExecutor"
 
-    @pytest.mark.asyncio
-    async def test_ask_tool_executes_when_callback_approves(self):
-        """Ask tools should execute when the ask_callback returns True."""
-        class AskTool(BaseTool):
-            name: str = "ask_op"
-            description: str = "Needs approval"
-            input_model: type[BaseModel] = AddInput
-            permission: str = "ask"
-            is_concurrent_safe: bool = False
-            async def execute(self, input: BaseModel) -> ToolResult:
-                return ToolResult(call_id="x", output="ran")
 
-        async def approve_all(name, desc, data):
-            return True
+def test_registry_has_no_max_result_size():
+    """After Task 6, ToolRegistry must not own max_result_size."""
+    from neoagent.tools.registry import ToolRegistry
+    r = ToolRegistry()
+    assert not hasattr(r, 'max_result_size'), \
+        "max_result_size must be in ToolExecutor, not ToolRegistry"
 
-        checker = PermissionChecker(ask_callback=approve_all)
-        reg = ToolRegistry(permission_checker=checker)
-        reg.register(AskTool())
-        calls = [ToolCall(id="c1", name="ask_op", input={"a": 1, "b": 2})]
-        results = await reg.execute(calls)
-        assert results[0].is_error is False
-        assert results[0].output == "ran"
 
-    @pytest.mark.asyncio
-    async def test_ask_tool_auto_approved_when_no_callback(self):
-        """With auto_approve=True (default), ask tools run without a callback."""
-        class AskTool(BaseTool):
-            name: str = "ask_op"
-            description: str = "Needs approval"
-            input_model: type[BaseModel] = AddInput
-            permission: str = "ask"
-            is_concurrent_safe: bool = False
-            async def execute(self, input: BaseModel) -> ToolResult:
-                return ToolResult(call_id="x", output="auto_ran")
-
-        checker = PermissionChecker(auto_approve=True)
-        reg = ToolRegistry(permission_checker=checker)
-        reg.register(AskTool())
-        calls = [ToolCall(id="c1", name="ask_op", input={"a": 1, "b": 2})]
-        results = await reg.execute(calls)
-        assert results[0].is_error is False
-        assert results[0].output == "auto_ran"
-
-    @pytest.mark.asyncio
-    async def test_ask_tool_blocked_when_auto_approve_false(self):
-        """With auto_approve=False and no callback, ask tools must be denied."""
-        class AskTool(BaseTool):
-            name: str = "ask_op"
-            description: str = "Needs approval"
-            input_model: type[BaseModel] = AddInput
-            permission: str = "ask"
-            is_concurrent_safe: bool = False
-            async def execute(self, input: BaseModel) -> ToolResult:
-                return ToolResult(call_id="x", output="should_not_run")
-
-        checker = PermissionChecker(auto_approve=False)
-        reg = ToolRegistry(permission_checker=checker)
-        reg.register(AskTool())
-        calls = [ToolCall(id="c1", name="ask_op", input={"a": 1, "b": 2})]
-        results = await reg.execute(calls)
-        assert results[0].is_error is True
-        assert "permission" in results[0].output.lower()
-
-    def test_registry_default_has_permission_checker(self):
-        """ToolRegistry should always have a PermissionChecker, even when not passed one."""
-        reg = ToolRegistry()
-        assert reg._permission_checker is not None
-        assert isinstance(reg._permission_checker, PermissionChecker)
+def test_registry_has_no_permission_checker():
+    """After Task 6, ToolRegistry must not own permission_checker."""
+    from neoagent.tools.registry import ToolRegistry
+    r = ToolRegistry()
+    assert not hasattr(r, '_permission_checker'), \
+        "_permission_checker must be in ToolExecutor, not ToolRegistry"

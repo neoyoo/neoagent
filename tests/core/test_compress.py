@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from neoagent.core.types import Message, TextBlock, ToolResultBlock, ToolUseBlock
 from neoagent.core.compress import ContextCompressor
+from neoagent.session import SessionState
 
 def _user(text: str) -> Message:
     return Message(role="user", content=text)
@@ -123,39 +124,44 @@ class TestCompress:
         assert "CONTEXT_SUMMARY" in all_text
 
     async def test_success_resets_failures(self):
+        from neoagent.session import SessionState
         c = ContextCompressor(provider=_make_provider("ok"))
-        c._consecutive_failures = 2
+        state = SessionState(compression_failures=2)
         msgs = [_user("a")] + [_user(f"b{i}") for i in range(4)]
-        await c.compress(msgs, context_budget=200_000)
-        assert c._consecutive_failures == 0
+        await c.compress(msgs, context_budget=200_000, session_state=state)
+        assert state.compression_failures == 0
 
 class TestCircuitBreaker:
     async def test_failure_increments(self):
+        from neoagent.session import SessionState
         p = MagicMock()
         p.create = AsyncMock(side_effect=RuntimeError("down"))
         c = ContextCompressor(provider=p, max_failures=3)
+        state = SessionState()
         msgs = [_user("a")] + [_user(f"b{i}") for i in range(4)]
-        await c.compress(msgs, context_budget=200_000)
-        assert c._consecutive_failures == 1
+        await c.compress(msgs, context_budget=200_000, session_state=state)
+        assert state.compression_failures == 1
 
     async def test_breaker_open_skips_provider(self):
+        from neoagent.session import SessionState
         p = MagicMock()
         p.create = AsyncMock(side_effect=RuntimeError("down"))
         c = ContextCompressor(provider=p, max_failures=3)
-        c._consecutive_failures = 3
+        state = SessionState(compression_failures=3)
         msgs = [_user("first")] + [_user(f"x{i}") for i in range(10)]
-        result = await c.compress(msgs, context_budget=200_000)
+        result = await c.compress(msgs, context_budget=200_000, session_state=state)
         p.create.assert_not_called()
         assert isinstance(result, list) and len(result) > 0
 
     async def test_fallback_preserves_first(self):
+        from neoagent.session import SessionState
         p = MagicMock()
         p.create = AsyncMock(side_effect=RuntimeError("dead"))
         c = ContextCompressor(provider=p, max_failures=1)
-        c._consecutive_failures = 1
+        state = SessionState(compression_failures=1)
         first = _user("anchor")
         msgs = [first] + [_user(f"x{i}") for i in range(20)]
-        result = await c.compress(msgs, context_budget=200_000)
+        result = await c.compress(msgs, context_budget=200_000, session_state=state)
         assert result[0].content == "anchor"
 
 
@@ -166,16 +172,16 @@ def _make_messages(n: int) -> list[Message]:
     ]
 
 
-# --- v2 iterative summary tests ---
+# --- v2 iterative summary tests (session_state-based) ---
 
 @pytest.mark.asyncio
 async def test_iterative_summary_passes_previous_to_llm() -> None:
-    """_previous_summary must appear in the LLM system prompt on compression."""
+    """previous_summary from session_state must appear in the LLM system prompt on compression."""
     provider = _make_provider("GOAL: original goal\nPROGRESS: done step 1")
     compressor = ContextCompressor(provider=provider)
-    compressor._previous_summary = "GOAL: original goal\nPROGRESS: nothing yet"
+    state = SessionState(previous_summary="GOAL: original goal\nPROGRESS: nothing yet")
     msgs = _make_messages(10)
-    await compressor.compress(msgs, context_budget=1000)
+    await compressor.compress(msgs, context_budget=1000, session_state=state)
     call_args = provider.create.call_args
     system_text = call_args.kwargs.get("system", "")
     assert "GOAL: original goal" in system_text
@@ -183,25 +189,21 @@ async def test_iterative_summary_passes_previous_to_llm() -> None:
 
 @pytest.mark.asyncio
 async def test_iterative_summary_updates_previous_summary() -> None:
-    """After compression, _previous_summary is updated to the new summary."""
+    """After compression, session_state.previous_summary is updated to the new summary."""
     new_summary = "GOAL: build agent\nPROGRESS: completed v1"
     provider = _make_provider(new_summary)
     compressor = ContextCompressor(provider=provider)
-    assert compressor._previous_summary is None
+    state = SessionState()
+    assert state.previous_summary is None
     msgs = _make_messages(10)
-    await compressor.compress(msgs, context_budget=1000)
-    assert compressor._previous_summary == new_summary
+    await compressor.compress(msgs, context_budget=1000, session_state=state)
+    assert state.previous_summary == new_summary
 
 
 def test_sanitize_tool_pairs_maintains_role_alternation() -> None:
     """When filtering drops a user message between two assistant messages,
     a placeholder must be inserted to preserve alternating roles."""
     c = ContextCompressor(provider=_make_provider())
-    # Two assistant messages with no user in between (after orphan filtering).
-    # Construct: assistant(orphan_use) + user(orphan_result) + assistant(text)
-    # After filtering, orphan_use and orphan_result are removed, leaving
-    # assistant (empty → dropped) and assistant("done"), preceded by user("go").
-    # Simpler: supply two assistant text messages back-to-back directly.
     msgs = [
         _user("go"),
         _assistant("first"),
@@ -222,14 +224,6 @@ def test_sanitize_tool_pairs_maintains_role_alternation() -> None:
     assert "second" in assistant_texts
 
 
-def test_reset_session_state_clears_previous_summary() -> None:
-    provider = _make_provider("summary text")
-    compressor = ContextCompressor(provider=provider)
-    compressor._previous_summary = "old summary"
-    compressor.reset_session_state()
-    assert compressor._previous_summary is None
-
-
 @pytest.mark.asyncio
 async def test_structured_template_keywords_in_system_prompt() -> None:
     """The compression system prompt must include structured template keywords."""
@@ -241,3 +235,44 @@ async def test_structured_template_keywords_in_system_prompt() -> None:
     system_text = call_args.kwargs.get("system", "")
     for keyword in ("GOAL", "PROGRESS", "DECISIONS"):
         assert keyword in system_text, f"Missing keyword {keyword!r} in system prompt"
+
+
+# --- NEW: Session integration tests ---
+
+def test_compress_no_instance_previous_summary() -> None:
+    """ContextCompressor must NOT have _previous_summary as an instance attribute."""
+    c = ContextCompressor(provider=_make_provider())
+    assert not hasattr(c, "_previous_summary"), (
+        "_previous_summary should have been removed from instance — it's in SessionState now"
+    )
+
+
+@pytest.mark.asyncio
+async def test_compress_reads_and_writes_session_state() -> None:
+    """compress() reads previous_summary from session_state and writes back the new summary."""
+    new_summary = "GOAL: test\nPROGRESS: step 1"
+    provider = _make_provider(new_summary)
+    compressor = ContextCompressor(provider=provider)
+
+    state = SessionState(previous_summary="GOAL: test\nPROGRESS: nothing yet")
+    msgs = _make_messages(10)
+    await compressor.compress(msgs, context_budget=1000, session_state=state)
+
+    # Old summary should appear in the LLM call
+    call_args = provider.create.call_args
+    system_text = call_args.kwargs.get("system", "")
+    assert "GOAL: test" in system_text
+
+    # New summary written back to state
+    assert state.previous_summary == new_summary
+
+
+@pytest.mark.asyncio
+async def test_compress_without_session_state_still_works() -> None:
+    """compress() works fine with no session_state (no previous summary context)."""
+    provider = _make_provider("GOAL: fresh")
+    compressor = ContextCompressor(provider=provider)
+    msgs = _make_messages(10)
+    result = await compressor.compress(msgs, context_budget=1000)
+    assert isinstance(result, list)
+    assert len(result) > 0

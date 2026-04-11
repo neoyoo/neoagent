@@ -1,5 +1,8 @@
 from __future__ import annotations
+import logging
 from neoagent.memory.store import MemoryStore
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_FILES = 5
 _DEFAULT_MAX_CONTENT_CHARS = 2000
@@ -51,7 +54,11 @@ class MemoryRetriever:
 
         parts = [f"# Memory\n{index}"]
         for _, filename, description in top:
-            content = self._store.read_topic(filename)
+            try:
+                content = self._store.read_topic(filename)
+            except ValueError:
+                logger.warning("Skipping invalid memory topic: %s", filename)
+                continue
             if content:
                 parts.append(f"## {description}\n{content[: self._max_content_chars]}")
 

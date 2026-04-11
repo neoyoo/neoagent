@@ -8,6 +8,7 @@ from neoagent.memory.retriever import MemoryRetriever
 if TYPE_CHECKING:
     from neoagent.memory.store import MemoryStore
     from neoagent.providers.base import Provider
+    from neoagent.session import SessionState
 
 logger = logging.getLogger(__name__)
 
@@ -19,31 +20,45 @@ class MemoryManager:
         self._store = store
         self._retriever = MemoryRetriever(store)
         self._extractor = MemoryExtractor(provider, store)
-        self._tool_calls_count: int = 0
-        self._initial_token_estimate: int = 0
 
-    def record_tool_calls(self, count: int) -> None:
-        self._tool_calls_count += count
+    def record_tool_calls(self, count: int, session_state: "SessionState | None" = None) -> None:
+        if session_state is not None:
+            session_state.memory_tool_calls += count
 
-    async def maybe_extract(self, messages: list[Message], current_tokens: int) -> None:
+    async def maybe_extract(
+        self,
+        messages: list[Message],
+        current_tokens: int,
+        session_state: "SessionState | None" = None,
+    ) -> tuple[bool, int]:
         """Extract memories if trigger conditions are met.
 
         First call sets the token baseline. Extraction can still fire on the
         first call if tool_calls_count already meets the threshold.
-        """
-        if self._initial_token_estimate == 0:
-            self._initial_token_estimate = current_tokens
 
-        token_delta = max(0, current_tokens - self._initial_token_estimate)
-        extracted = await self._extractor.extract(
-            messages,
-            tool_calls_count=self._tool_calls_count,
-            token_delta=token_delta,
-        )
-        if extracted > 0:
-            logger.info("Stored %d memory item(s)", extracted)
-            self._tool_calls_count = 0
-            self._initial_token_estimate = current_tokens  # Reset baseline
+        Returns:
+            (triggered, items_stored) — triggered is True when extraction ran,
+            items_stored is the number of memory items written (0 if not triggered).
+        """
+        if session_state is not None:
+            if session_state.memory_token_baseline == 0:
+                session_state.memory_token_baseline = current_tokens
+
+            token_delta = max(0, current_tokens - session_state.memory_token_baseline)
+            extracted = await self._extractor.extract(
+                messages,
+                tool_calls_count=session_state.memory_tool_calls,
+                token_delta=token_delta,
+            )
+            if extracted > 0:
+                logger.info("Stored %d memory item(s)", extracted)
+                session_state.memory_tool_calls = 0
+                session_state.memory_token_baseline = current_tokens
+                return (True, extracted)
+            return (False, 0)
+        else:
+            # Fallback: no session_state — no-op (state tracking requires session)
+            return (False, 0)
 
     def build_prompt_section(self, query: str | None = None) -> str:
         return self._retriever.retrieve(query)

@@ -221,3 +221,146 @@ class TestBashToolCwd:
         assert r.is_error is False
         # tmp_path may be a symlink on macOS; resolve both for comparison
         assert str(tmp_path.resolve()) in r.output.strip()
+
+
+# ── Restricted Shell tests (Task 7) ──────────────────────────────────────────
+import os as _os
+from neoagent.tools.builtin.bash import _DEFAULT_ENV_WHITELIST
+
+
+class TestBashToolRestrictedShell:
+    """Tests for restricted mode, env whitelist, and timeout behaviour (Task 7)."""
+
+    @pytest.mark.asyncio
+    async def test_restricted_mode_blocks_cd(self):
+        """cd should fail in restricted mode."""
+        tool = BashTool()
+        result = await tool.execute(BashInput(command="cd /tmp"))
+        assert result.is_error, "cd should be blocked by bash --restricted"
+
+    @pytest.mark.asyncio
+    async def test_restricted_mode_blocks_redirect(self):
+        """Output redirection should fail in restricted mode."""
+        tool = BashTool()
+        result = await tool.execute(BashInput(command="echo hello > /tmp/neoagent_test_output.txt"))
+        assert result.is_error, "File redirection should be blocked by bash --restricted"
+
+    @pytest.mark.asyncio
+    async def test_pipes_still_work(self):
+        """Pipes should work in restricted mode."""
+        tool = BashTool()
+        result = await tool.execute(BashInput(command="echo hello | tr 'a-z' 'A-Z'"))
+        assert not result.is_error
+        assert "HELLO" in result.output
+
+    @pytest.mark.asyncio
+    async def test_echo_works(self):
+        """Basic echo should work in restricted mode."""
+        tool = BashTool()
+        result = await tool.execute(BashInput(command="echo test_output_xyz"))
+        assert not result.is_error
+        assert "test_output_xyz" in result.output
+
+    @pytest.mark.asyncio
+    async def test_timeout_kills_process(self):
+        """Timeout must kill process and return error."""
+        tool = BashTool()
+        result = await tool.execute(BashInput(command="sleep 10", timeout=1))
+        assert result.is_error
+        assert "Timed out" in result.output
+
+    def test_timeout_default_is_30(self):
+        """Default timeout must be 30 (not 120 as before)."""
+        inp = BashInput(command="echo hi")
+        assert inp.timeout == 30
+
+    def test_timeout_max_is_300(self):
+        """Timeout field must reject values > 300."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            BashInput(command="echo hi", timeout=301)
+
+    def test_timeout_min_is_1(self):
+        """Timeout field must reject values < 1."""
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            BashInput(command="echo hi", timeout=0)
+
+    @pytest.mark.asyncio
+    async def test_env_whitelist_blocks_leakage(self):
+        """Secret env vars must not leak into subprocess."""
+        _os.environ["NEOAGENT_SECRET_TEST"] = "super_secret_value"
+        try:
+            tool = BashTool()
+            result = await tool.execute(BashInput(command="env"))
+            assert "super_secret_value" not in result.output
+        finally:
+            del _os.environ["NEOAGENT_SECRET_TEST"]
+
+    @pytest.mark.asyncio
+    async def test_env_whitelist_passes_path(self):
+        """PATH must be available in subprocess (it's in the default whitelist)."""
+        tool = BashTool()
+        result = await tool.execute(BashInput(command="echo $PATH"))
+        assert not result.is_error
+        assert len(result.output.strip()) > 0
+
+    @pytest.mark.asyncio
+    async def test_allowed_env_passthrough(self):
+        """Custom allowed_env key is visible; keys not in the list are not."""
+        _os.environ["CUSTOM_KEY"] = "custom_value"
+        try:
+            tool = BashTool(allowed_env=["CUSTOM_KEY"])
+            result = await tool.execute(BashInput(command="env"))
+            env_lines = result.output.strip().splitlines()
+            keys = [line.split("=")[0] for line in env_lines if "=" in line]
+            assert "CUSTOM_KEY" in keys
+            # PATH was not in the custom whitelist
+            assert "PATH" not in keys
+        finally:
+            del _os.environ["CUSTOM_KEY"]
+
+    @pytest.mark.asyncio
+    async def test_blocked_pattern_still_checked(self):
+        """Regex blocklist must still fire before restricted shell execution."""
+        tool = BashTool()
+        result = await tool.execute(BashInput(command="eval echo hi"))
+        assert result.is_error
+        assert "blocked by safety filter" in result.output
+
+    def test_default_env_whitelist_contains_required_keys(self):
+        assert "PATH" in _DEFAULT_ENV_WHITELIST
+        assert "HOME" in _DEFAULT_ENV_WHITELIST
+        assert "USER" in _DEFAULT_ENV_WHITELIST
+
+
+# ── Fix 3: Process group kill on timeout ─────────────────────────────────────
+
+class TestBashToolKillpg:
+    """Tests that timeout kills the entire process group, not just the top process."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_kills_pipeline_children(self):
+        """Timeout must kill child processes spawned in a pipeline."""
+        tool = BashTool()
+        # A pipeline where the second process sleeps — both must be killed on timeout
+        result = await tool.execute(BashInput(command="sleep 10 | sleep 10", timeout=1))
+        assert result.is_error
+        assert "Timed out" in result.output
+
+    @pytest.mark.asyncio
+    async def test_process_group_created(self):
+        """start_new_session=True means the subprocess runs fine in its own session."""
+        tool = BashTool()
+        # A simple command that works fine — confirms start_new_session doesn't break execution
+        result = await tool.execute(BashInput(command="echo hello_from_new_session"))
+        assert not result.is_error
+        assert "hello_from_new_session" in result.output
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_error_message(self):
+        """After kill, result must indicate the configured timeout value."""
+        tool = BashTool()
+        result = await tool.execute(BashInput(command="sleep 100", timeout=1))
+        assert result.is_error
+        assert "1s" in result.output  # timeout=1 reported in message

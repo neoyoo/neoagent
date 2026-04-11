@@ -7,6 +7,7 @@ from neoagent.core.types import Message, TextBlock, ToolResultBlock, ToolUseBloc
 
 if TYPE_CHECKING:
     from neoagent.providers.base import Provider
+    from neoagent.session import SessionState
 
 logger = logging.getLogger(__name__)
 _KEEP_RECENT = 6
@@ -48,16 +49,9 @@ def _message_to_text(msg: Message) -> str:
     return " ".join(parts)
 
 class ContextCompressor:
-    def __init__(self, provider: Provider, max_failures: int = 3) -> None:
+    def __init__(self, provider: "Provider", max_failures: int = 3) -> None:
         self._provider = provider
         self._max_failures = max_failures
-        self._consecutive_failures: int = 0
-        self._previous_summary: str | None = None
-
-    def reset_session_state(self) -> None:
-        """Clear iterative summary state. Call when starting a new task/session."""
-        self._previous_summary = None
-        self._consecutive_failures = 0
 
     def estimate_tokens(self, messages: list[Message]) -> int:
         total = 0
@@ -73,20 +67,32 @@ class ContextCompressor:
     def should_compress(self, messages: list[Message], schemas: list[dict], context_budget: int) -> bool:
         return (self.estimate_tokens(messages) + self.estimate_tools_tokens(schemas)) > context_budget * 0.7
 
-    async def compress(self, messages: list[Message], context_budget: int) -> list[Message]:
+    async def compress(
+        self,
+        messages: list[Message],
+        context_budget: int,
+        session_state: "SessionState | None" = None,
+    ) -> list[Message]:
         if len(messages) <= 1:
             return messages
-        if self._consecutive_failures >= self._max_failures:
+        failures = session_state.compression_failures if session_state else 0
+        if failures >= self._max_failures:
             return self._truncate_oldest(messages)
         try:
-            compressed = await self._llm_compress(messages)
-            self._consecutive_failures = 0
+            compressed = await self._llm_compress(messages, session_state=session_state)
+            if session_state:
+                session_state.compression_failures = 0
             return compressed
         except Exception:
-            self._consecutive_failures += 1
+            if session_state:
+                session_state.compression_failures += 1
             return self._truncate_oldest(messages)
 
-    async def _llm_compress(self, messages: list[Message]) -> list[Message]:
+    async def _llm_compress(
+        self,
+        messages: list[Message],
+        session_state: "SessionState | None" = None,
+    ) -> list[Message]:
         if len(messages) < 3:
             return messages
         anchor = messages[0]
@@ -97,13 +103,15 @@ class ContextCompressor:
             middle = messages[1:-1] if len(messages) > 2 else []
             recent = [messages[-1]]
         middle_text = "\n".join(_message_to_text(m) for m in middle)
+        previous_summary = session_state.previous_summary if session_state is not None else None
         response = await self._provider.create(
-            system=_build_summarize_system(self._previous_summary),
+            system=_build_summarize_system(previous_summary),
             messages=[Message(role="user", content=middle_text)],
             tools=[],
         )
         summary = response.text_content.strip() or "(no summary)"
-        self._previous_summary = summary
+        if session_state is not None:
+            session_state.previous_summary = summary
         summary_msg = Message(role="user", content=f"[Context summary from earlier in the conversation]\n{summary}")
         return self._sanitize_tool_pairs([anchor, summary_msg, *recent])
 

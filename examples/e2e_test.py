@@ -71,6 +71,7 @@ def _detect_config() -> dict:
             "api_key": anthropic_key,
             "model": os.environ.get("ANTHROPIC_MODEL") or "claude-haiku-4-20250514",
             "base_url": os.environ.get("ANTHROPIC_BASE_URL") or None,
+            "auto_approve_tools": True,  # e2e tests are non-interactive
         }
     if openai_key:
         return {
@@ -78,6 +79,7 @@ def _detect_config() -> dict:
             "api_key": openai_key,
             "model": os.environ.get("OPENAI_MODEL") or "gpt-4o-mini",
             "base_url": os.environ.get("OPENAI_BASE_URL") or None,
+            "auto_approve_tools": True,  # e2e tests are non-interactive
         }
 
     print(
