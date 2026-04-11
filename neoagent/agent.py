@@ -80,3 +80,25 @@ class NeoAgent:
         ))
 
         self._loop._memory_manager = memory_manager
+
+    def enable_logging(
+        self,
+        log_dir: "Path | None" = None,
+        console: bool = True,
+    ) -> "Observer":
+        """Enable framework-level logging. Returns the Observer for manual close()."""
+        from neoagent.observe import Observer
+        from pathlib import Path as _Path
+
+        if log_dir is None:
+            log_dir = _Path.cwd() / "logs"
+
+        observer = Observer(log_dir=log_dir, console=console)
+        self._loop._observer = observer
+        return observer
+
+    def disable_logging(self) -> None:
+        """Disable logging and close any open log files."""
+        if self._loop._observer:
+            self._loop._observer.close()
+            self._loop._observer = None
