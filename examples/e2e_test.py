@@ -225,6 +225,56 @@ async def test_multi_turn_tools(cfg: dict) -> None:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+async def test_memory_enable(cfg: dict) -> None:
+    """Test 5: enable_memory() — agent with memory enabled completes a chat."""
+    from neoagent.agent import NeoAgent
+    from neoagent.config import NeoAgentConfig
+    import tempfile
+    from pathlib import Path
+
+    _header("Test 5: Memory System — enable_memory()")
+
+    config = NeoAgentConfig(**cfg)
+    agent = NeoAgent(config)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        agent.enable_memory(memory_dir=Path(tmp))
+        try:
+            response = await agent.chat("What is 3+3? Reply with just the number.")
+            print(f"Response: {response!r}")
+            passed = "6" in response
+            _record("Memory — enable_memory()", passed)
+        except Exception as exc:
+            print(f"{RED}Exception:{RESET} {exc}")
+            _record("Memory — enable_memory()", False)
+
+
+async def test_skill_lazy_load(cfg: dict) -> None:
+    """Test 6: skill lazy loading — activate/deactivate a skill section."""
+    from neoagent.agent import NeoAgent
+    from neoagent.config import NeoAgentConfig
+    from neoagent.core.prompt import PromptSection
+
+    _header("Test 6: Skill Lazy Loading")
+
+    config = NeoAgentConfig(**cfg)
+    agent = NeoAgent(config)
+    agent._prompt_builder.register_skill(
+        "math_expert",
+        PromptSection(name="math_expert", content="You excel at math.", priority=1, is_static=True),
+    )
+    agent._prompt_builder.activate_skill("math_expert")
+
+    try:
+        response = await agent.chat("What is 7 * 8? Reply with just the number.")
+        print(f"Response: {response!r}")
+        passed = "56" in response
+        _record("Skill Lazy Loading", passed)
+    except Exception as exc:
+        print(f"{RED}Exception:{RESET} {exc}")
+        _record("Skill Lazy Loading", False)
+
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
@@ -265,6 +315,8 @@ async def main() -> None:
     await test_tool_read(cfg)
     await test_tool_bash(cfg)
     await test_multi_turn_tools(cfg)
+    await test_memory_enable(cfg)
+    await test_skill_lazy_load(cfg)
 
     _print_summary()
 
