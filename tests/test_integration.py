@@ -11,6 +11,8 @@ from neoagent.core.loop import QueryLoop
 from neoagent.core.prompt import PromptBuilder, PromptSection
 from neoagent.core.compress import ContextCompressor
 from neoagent.tools.base import BaseTool
+from neoagent.tools.executor import ToolExecutor
+from neoagent.tools.permission import PermissionChecker
 from neoagent.tools.registry import ToolRegistry
 from neoagent.providers.base import Provider, Response
 from neoagent.session import Session
@@ -120,9 +122,10 @@ class TestToolCallFlow:
         ])
         registry = ToolRegistry()
         registry.register(ReadTool(allowed_directories=[tmp_path]))
+        executor = ToolExecutor(registry=registry, permission_checker=PermissionChecker(auto_approve=True))
         builder = PromptBuilder()
         builder.add_section(PromptSection(name="sys", content="Help.", priority=0))
-        loop = QueryLoop(provider=provider, tool_registry=registry, prompt_builder=builder)
+        loop = QueryLoop(provider=provider, tool_registry=registry, tool_executor=executor, prompt_builder=builder)
 
         result = await loop.run(session=_make_session("read the file"))
 
@@ -142,9 +145,10 @@ class TestToolCallFlow:
         ])
         registry = ToolRegistry()
         registry.register(EchoTool())
+        executor = ToolExecutor(registry=registry, permission_checker=PermissionChecker(auto_approve=True))
         builder = PromptBuilder()
         builder.add_section(PromptSection(name="sys", content="x", priority=0))
-        loop = QueryLoop(provider=provider, tool_registry=registry, prompt_builder=builder)
+        loop = QueryLoop(provider=provider, tool_registry=registry, tool_executor=executor, prompt_builder=builder)
         await loop.run(session=_make_session("echo hello"))
 
         # Second call should have tool_result in messages
@@ -164,9 +168,10 @@ class TestMaxTurns:
         provider = MockProvider(responses)
         registry = ToolRegistry()
         registry.register(EchoTool())
+        executor = ToolExecutor(registry=registry, permission_checker=PermissionChecker(auto_approve=True))
         builder = PromptBuilder()
         builder.add_section(PromptSection(name="sys", content="x", priority=0))
-        loop = QueryLoop(provider=provider, tool_registry=registry, prompt_builder=builder, max_turns=3)
+        loop = QueryLoop(provider=provider, tool_registry=registry, tool_executor=executor, prompt_builder=builder, max_turns=3)
 
         result = await loop.run(session=_make_session("go"))
 

@@ -6,13 +6,13 @@ from neoagent.events import (
     EventBus,
     CompressCheckEvent, CompressDoneEvent,
     ProviderRequestEvent, ProviderResponseEvent,
-    ToolCallEvent, ToolResultEvent,
     TurnCompleteEvent,
 )
 
 if TYPE_CHECKING:
     from neoagent.memory.manager import MemoryManager
     from neoagent.session import Session, SessionState
+    from neoagent.tools.executor import ToolExecutor
 
 from neoagent.core.prompt import PromptBuilder
 from neoagent.core.types import ConversationResult, Message, ToolCall, ToolResult, ToolResultBlock, ToolUseBlock, Turn
@@ -27,9 +27,11 @@ class QueryLoop:
     def __init__(self, provider: Provider, tool_registry: ToolRegistry, prompt_builder: PromptBuilder,
                  max_turns: int = 30, context_budget: int = 0, on_turn: Callable[[Turn], None] | None = None,
                  memory_manager: "MemoryManager | None" = None,
-                 event_bus: EventBus | None = None):
+                 event_bus: EventBus | None = None,
+                 tool_executor: "ToolExecutor | None" = None):
         self._provider = provider
         self._registry = tool_registry
+        self._executor = tool_executor
         self._prompt_builder = prompt_builder
         self.max_turns = max_turns
         self.context_budget = context_budget if context_budget > 0 else provider.get_context_window()
@@ -138,12 +140,7 @@ class QueryLoop:
                     current_tokens = self._compressor.estimate_tokens(msgs)
                     await self._memory_manager.maybe_extract(msgs, current_tokens, session_state=session_state)
                 return ConversationResult(turns=turns, reason="completed")
-            for tc in tool_calls:
-                self._bus.emit(ToolCallEvent(name=tc.name, input_data=tc.input, call_id=tc.id))
-            results = await self._registry.execute(tool_calls)
-            for tc, r in zip(tool_calls, results):
-                self._bus.emit(ToolResultEvent(name=tc.name, call_id=r.call_id,
-                                               output=r.output, is_error=r.is_error))
+            results = await self._executor.execute(tool_calls)
             if self._memory_manager:
                 self._memory_manager.record_tool_calls(len(tool_calls), session_state=session_state)
             assistant_msg = Message(role="assistant", content=response.content)

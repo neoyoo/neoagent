@@ -7,6 +7,7 @@ from neoagent.events import EventBus
 from neoagent.providers.base import Provider
 from neoagent.session import JsonFileStorage, Session, SessionStorage
 from neoagent.tools.base import BaseTool
+from neoagent.tools.executor import ToolExecutor
 from neoagent.tools.permission import PermissionChecker
 from neoagent.tools.registry import ToolRegistry
 
@@ -25,17 +26,24 @@ class NeoAgent:
         self._config = config
         self._provider = _create_provider(config)
         self._permission = PermissionChecker(auto_approve=config.auto_approve_tools)
-        self._registry = ToolRegistry(max_result_size=config.max_result_size, permission_checker=self._permission)
+        self._registry = ToolRegistry()
+        self._event_bus = EventBus()
+        self._executor = ToolExecutor(
+            registry=self._registry,
+            permission_checker=self._permission,
+            max_result_size=config.max_result_size,
+            event_bus=self._event_bus,
+        )
         self._prompt_builder = PromptBuilder()
         self._prompt_builder.add_section(PromptSection(
             name="identity",
             content="You are neoagent, a helpful AI assistant.",
             priority=0, is_static=True,
         ))
-        self._event_bus = EventBus()
         self._loop = QueryLoop(
             provider=self._provider,
             tool_registry=self._registry,
+            tool_executor=self._executor,
             prompt_builder=self._prompt_builder,
             max_turns=config.max_turns,
             context_budget=config.context_budget,
