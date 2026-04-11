@@ -66,7 +66,7 @@ class NeoAgent:
         from neoagent.memory.manager import MemoryManager
 
         if memory_dir is None:
-            key = project_key or hashlib.sha1(str(_Path.cwd()).encode()).hexdigest()[:8]
+            key = project_key or hashlib.sha256(str(_Path.cwd()).encode()).hexdigest()[:8]
             memory_dir = _Path.home() / ".neoagent" / "memory" / key
 
         store = MemoryStore(memory_dir)

@@ -5,8 +5,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import IO, TYPE_CHECKING
 
+from neoagent.core.types import TextBlock, ToolResultBlock, ToolUseBlock
+
 if TYPE_CHECKING:
-    from neoagent.core.types import Message, TextBlock, ToolUseBlock
+    from neoagent.core.types import Message
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +109,6 @@ class Observer:
                 elif isinstance(msg.content, list):
                     parts = []
                     for b in msg.content:
-                        from neoagent.core.types import TextBlock, ToolUseBlock, ToolResultBlock
                         if isinstance(b, TextBlock):
                             parts.append(b.text)
                         elif isinstance(b, ToolUseBlock):
@@ -138,7 +139,6 @@ class Observer:
         self._write(f"  Stop reason: {stop_reason}", _GREEN)
         self._write(f"  Tokens: {input_tokens} in / {output_tokens} out")
         for block in content:
-            from neoagent.core.types import TextBlock, ToolUseBlock
             if isinstance(block, TextBlock):
                 self._write(
                     f"  Text: {_truncate(block.text, 300)}",
@@ -218,6 +218,12 @@ class Observer:
         self._write(f"  SKILL DEACTIVATE: {name}", _DIM)
 
     # ── Lifecycle ─────────────────────────────────────────────────
+
+    def __enter__(self) -> "Observer":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
 
     def close(self) -> None:
         if self._file:

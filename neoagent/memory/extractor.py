@@ -122,7 +122,7 @@ class MemoryExtractor:
     def _rebuild_index(self) -> None:
         """Regenerate MEMORY.md from all .md files in the store directory."""
         entries: list[str] = []
-        for path in sorted(self._store._dir.glob("*.md")):
+        for path in sorted(self._store.directory.glob("*.md")):
             if path.name == "MEMORY.md":
                 continue
             first_line = ""

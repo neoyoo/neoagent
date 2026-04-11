@@ -19,6 +19,10 @@ class MemoryStore:
         self._dir.mkdir(parents=True, exist_ok=True)
 
     @property
+    def directory(self) -> Path:
+        return self._dir
+
+    @property
     def index_path(self) -> Path:
         return self._dir / _INDEX_FILE
 

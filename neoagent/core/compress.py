@@ -10,6 +10,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _KEEP_RECENT = 6
+# NOTE: cl100k_base is GPT-4's tokenizer. For Anthropic models this gives
+# approximate counts (typically within 10-20%). Accurate enough for compression
+# threshold decisions. A future improvement could accept a provider-specific tokenizer.
 _ENCODING = tiktoken.get_encoding("cl100k_base")
 _SUMMARIZE_SYSTEM_TEMPLATE = """\
 You are a context compression assistant. Compress the conversation below using this structure:

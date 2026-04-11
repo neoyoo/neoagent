@@ -70,3 +70,11 @@ def test_on_memory_extract_done(tmp_path: Path) -> None:
     content = obs.log_path.read_text()
     assert "prefs.md" in content
     assert "2 item" in content
+
+
+def test_observer_context_manager(tmp_path: Path) -> None:
+    with Observer(log_dir=tmp_path, console=False) as obs:
+        obs.on_tool_call("test", {"x": 1})
+    # File should be closed after context exit
+    content = obs.log_path.read_text()
+    assert "test" in content
