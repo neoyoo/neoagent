@@ -28,11 +28,11 @@ class MemoryManager:
     async def maybe_extract(self, messages: list[Message], current_tokens: int) -> None:
         """Extract memories if trigger conditions are met.
 
-        First call only sets the baseline; subsequent calls check the delta.
+        First call sets the token baseline. Extraction can still fire on the
+        first call if tool_calls_count already meets the threshold.
         """
         if self._initial_token_estimate == 0:
             self._initial_token_estimate = current_tokens
-            return
 
         token_delta = max(0, current_tokens - self._initial_token_estimate)
         extracted = await self._extractor.extract(

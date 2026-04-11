@@ -175,13 +175,15 @@ async def test_a_memory_lifecycle(cfg: dict) -> None:
         _info("Sending prompt requesting 5 echo commands sequentially...")
 
         prompt = (
-            "Please run these 5 shell commands one by one using the bash tool, "
-            "then summarise the output: "
-            "(1) echo 'step_one' "
-            "(2) echo 'step_two' "
-            "(3) echo 'step_three' "
-            "(4) echo 'step_four' "
-            "(5) echo 'step_five'"
+            "I'm Neo, a senior AI engineer working on the neoagent project. "
+            "My preferences: I always use Python 3.11+, prefer pydantic v2, and "
+            "follow TDD workflow. The project repo is at /tmp/neoagent. "
+            "Now please run these 5 commands to verify my environment: "
+            "(1) echo 'python_version=3.11' "
+            "(2) echo 'framework=neoagent' "
+            "(3) echo 'test_runner=pytest' "
+            "(4) echo 'style=black' "
+            "(5) echo 'typing=strict'"
         )
 
         try:
@@ -268,17 +270,19 @@ async def test_b_context_compression(cfg: dict) -> None:
 
     _header("TEST B: Context Compression — Trigger + Iterative Summary")
 
-    TINY_BUDGET = 1500  # very small — will trigger at ~1050 tokens (70% threshold)
+    TINY_BUDGET = 500  # very small — will trigger at ~350 tokens (70% threshold)
 
     # ── Step 1: Create agent with tiny context_budget ─────────────────────
     _subheader("B1. Create agent — context_budget=1500")
-    config = NeoAgentConfig(**cfg, context_budget=TINY_BUDGET)
+    cfg_copy = dict(cfg)
+    cfg_copy["context_budget"] = TINY_BUDGET
+    config = NeoAgentConfig(**cfg_copy)
     agent = NeoAgent(config)
     agent.register_tool(BashTool())
 
     comp = agent._loop._compressor
     _obs("context_budget", agent._loop.context_budget)
-    _obs("Compression threshold (70%)", int(TINY_BUDGET * 0.7))
+    _obs("Compression trigger threshold (70%)", int(TINY_BUDGET * 0.7))
     _obs("_previous_summary BEFORE any conversation", repr(comp._previous_summary))
     _obs("_consecutive_failures", comp._consecutive_failures)
 

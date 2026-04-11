@@ -44,9 +44,22 @@ def test_record_tool_calls_accumulates(manager: MemoryManager) -> None:
 
 @pytest.mark.asyncio
 async def test_maybe_extract_first_call_sets_baseline(manager: MemoryManager) -> None:
+    # First call with 0 tool_calls and 0 token_delta → sets baseline, no extraction
     await manager.maybe_extract(_msgs(), current_tokens=1000)
     assert manager._initial_token_estimate == 1000
     manager._extractor._provider.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_maybe_extract_first_call_can_trigger_if_tool_calls_high(tmp_path: Path) -> None:
+    """First call should still trigger extraction if tool_calls >= threshold."""
+    items = [{"filename": "g.md", "description": "goals", "content": "# G\n- x\n"}]
+    provider = _make_provider(json.dumps(items))
+    store = MemoryStore(tmp_path)
+    manager = MemoryManager(store, provider)
+    manager.record_tool_calls(5)
+    await manager.maybe_extract(_msgs(), current_tokens=500)
+    assert store.read_topic("g.md") != ""
 
 
 @pytest.mark.asyncio

@@ -62,15 +62,22 @@ class Observer:
     def log_path(self) -> Path | None:
         return self._log_path
 
-    def _write(self, line: str, color: str = "") -> None:
-        """Write a line to console and/or file."""
+    def _write(self, line: str, color: str = "", full: str | None = None) -> None:
+        """Write a line to console and/or file.
+
+        Args:
+            line: Text for console (may be truncated).
+            color: ANSI color for console output.
+            full: If provided, written to file instead of `line`.
+                  Use this to log untruncated content to file while
+                  keeping console output concise.
+        """
         if not self.enabled:
             return
         if self._console:
             print(f"{color}{line}{_RESET}" if color else line)
         if self._file:
-            # Strip ANSI for file output
-            self._file.write(line + "\n")
+            self._file.write((full if full is not None else line) + "\n")
             self._file.flush()
 
     def _section(self, title: str) -> None:
@@ -85,16 +92,43 @@ class Observer:
         self, system: str, messages: list, tools: list, turn: int
     ) -> None:
         self._section(f"PROVIDER REQUEST (turn {turn})")
-        self._write(f"  System prompt: {_truncate(system, 200)}", _CYAN)
+        self._write(
+            f"  System prompt: {_truncate(system, 200)}", _CYAN,
+            full=f"  System prompt:\n{system}",
+        )
         self._write(f"  Messages: {len(messages)}", _CYAN)
-        # Log last message content
+        # Log all messages to file, last message to console
         if messages:
+            # Full messages for file
+            full_msgs = []
+            for msg in messages:
+                if isinstance(msg.content, str):
+                    full_msgs.append(f"    [{msg.role}]: {msg.content}")
+                elif isinstance(msg.content, list):
+                    parts = []
+                    for b in msg.content:
+                        from neoagent.core.types import TextBlock, ToolUseBlock, ToolResultBlock
+                        if isinstance(b, TextBlock):
+                            parts.append(b.text)
+                        elif isinstance(b, ToolUseBlock):
+                            parts.append(f"[tool_use: {b.name}({json.dumps(b.input)[:500]})]")
+                        elif isinstance(b, ToolResultBlock):
+                            parts.append(f"[tool_result: {b.content}]")
+                    full_msgs.append(f"    [{msg.role}]: {' | '.join(parts)}")
+            full_file = "  Messages:\n" + "\n".join(full_msgs)
+
             last = messages[-1]
             if isinstance(last.content, str):
-                self._write(f"  Last message ({last.role}): {_truncate(last.content, 300)}")
+                self._write(
+                    f"  Last message ({last.role}): {_truncate(last.content, 300)}",
+                    full=full_file,
+                )
             elif isinstance(last.content, list):
                 block_types = [type(b).__name__ for b in last.content]
-                self._write(f"  Last message ({last.role}): {block_types}")
+                self._write(
+                    f"  Last message ({last.role}): {block_types}",
+                    full=full_file,
+                )
         self._write(f"  Tools: {[t.get('name', '?') for t in tools] if tools else '(none)'}")
 
     def on_provider_response(
@@ -106,22 +140,32 @@ class Observer:
         for block in content:
             from neoagent.core.types import TextBlock, ToolUseBlock
             if isinstance(block, TextBlock):
-                self._write(f"  Text: {_truncate(block.text, 300)}")
+                self._write(
+                    f"  Text: {_truncate(block.text, 300)}",
+                    full=f"  Text: {block.text}",
+                )
             elif isinstance(block, ToolUseBlock):
-                args = json.dumps(block.input)[:200]
-                self._write(f"  Tool call: {block.name}({args})", _YELLOW)
+                args_full = json.dumps(block.input)
+                self._write(
+                    f"  Tool call: {block.name}({_truncate(args_full, 200)})", _YELLOW,
+                    full=f"  Tool call: {block.name}({args_full})",
+                )
 
     # ── Tool events ──────────────────────────────────────────────
 
     def on_tool_call(self, name: str, input_data: dict) -> None:
-        args = json.dumps(input_data)[:300]
-        self._write(f"  TOOL CALL: {name}({args})", _YELLOW)
+        args_full = json.dumps(input_data)
+        self._write(
+            f"  TOOL CALL: {name}({_truncate(args_full, 300)})", _YELLOW,
+            full=f"  TOOL CALL: {name}({args_full})",
+        )
 
     def on_tool_result(self, name: str, output: str, is_error: bool) -> None:
         status = "ERROR" if is_error else "OK"
         self._write(
             f"  TOOL RESULT [{status}]: {name} -> {_truncate(output, 300)}",
             _GREEN if not is_error else "\033[91m",
+            full=f"  TOOL RESULT [{status}]: {name} -> {output}",
         )
 
     # ── Compression events ────────────────────────────────────────
@@ -135,9 +179,15 @@ class Observer:
 
     def on_compress_done(self, summary: str, previous_summary: str | None) -> None:
         self._section("COMPRESSION COMPLETE")
-        self._write(f"  Summary: {_truncate(summary, 400)}", _MAGENTA)
+        self._write(
+            f"  Summary: {_truncate(summary, 400)}", _MAGENTA,
+            full=f"  Summary:\n{summary}",
+        )
         if previous_summary:
-            self._write(f"  Previous summary was: {_truncate(previous_summary, 200)}", _DIM)
+            self._write(
+                f"  Previous summary was: {_truncate(previous_summary, 200)}", _DIM,
+                full=f"  Previous summary was:\n{previous_summary}",
+            )
 
     def on_compress_fallback(self, reason: str) -> None:
         self._write(f"  COMPRESS FALLBACK: {reason}", "\033[91m")

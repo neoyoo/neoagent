@@ -117,8 +117,11 @@ def _parse_response(raw) -> Response:
     )
 
 class OpenAIProvider(Provider):
-    def __init__(self, api_key: str, model: str = "gpt-4o", max_tokens: int = 4096):
-        self._client = AsyncOpenAI(api_key=api_key)
+    def __init__(self, api_key: str, model: str = "gpt-4o", max_tokens: int = 4096, base_url: str | None = None):
+        client_kwargs: dict = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self._client = AsyncOpenAI(**client_kwargs)
         self.model = model
         self.max_tokens = max_tokens
 

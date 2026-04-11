@@ -84,6 +84,13 @@ class MemoryExtractor:
                 tools=[],
             )
             raw = response.text_content.strip()
+            if not raw:
+                return 0
+            # Strip markdown code fences if present (```json ... ```)
+            if raw.startswith("```"):
+                lines = raw.splitlines()
+                lines = [l for l in lines if not l.strip().startswith("```")]
+                raw = "\n".join(lines).strip()
             items = json.loads(raw)
             if not isinstance(items, list):
                 return 0
