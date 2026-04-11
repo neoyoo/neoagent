@@ -45,3 +45,19 @@ def test_delete_topic(store: MemoryStore) -> None:
 
 def test_delete_missing_topic_no_error(store: MemoryStore) -> None:
     store.delete_topic("nonexistent.md")  # should not raise
+
+
+def test_read_topic_path_traversal_blocked(store: MemoryStore) -> None:
+    """Path traversal via filename must raise ValueError (not silently escape the dir)."""
+    with pytest.raises(ValueError, match="escapes memory directory"):
+        store.read_topic("../../etc/passwd")
+
+
+def test_write_topic_path_traversal_blocked(store: MemoryStore) -> None:
+    with pytest.raises(ValueError, match="escapes memory directory"):
+        store.write_topic("../../tmp/evil.md", "bad content")
+
+
+def test_delete_topic_path_traversal_blocked(store: MemoryStore) -> None:
+    with pytest.raises(ValueError, match="escapes memory directory"):
+        store.delete_topic("../../tmp/evil.md")

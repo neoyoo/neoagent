@@ -26,6 +26,13 @@ class MemoryStore:
     def index_path(self) -> Path:
         return self._dir / _INDEX_FILE
 
+    def _safe_path(self, filename: str) -> Path:
+        """Resolve filename and verify it's within the memory directory."""
+        path = (self._dir / filename).resolve()
+        if not path.is_relative_to(self._dir.resolve()):
+            raise ValueError(f"Memory filename {filename!r} escapes memory directory")
+        return path
+
     def read_index(self) -> str:
         if not self.index_path.exists():
             return ""
@@ -35,16 +42,17 @@ class MemoryStore:
         self.index_path.write_text(content, encoding="utf-8")
 
     def read_topic(self, filename: str) -> str:
-        path = self._dir / filename
+        path = self._safe_path(filename)
         if not path.exists():
             return ""
         return path.read_text(encoding="utf-8")
 
     def write_topic(self, filename: str, content: str) -> None:
-        (self._dir / filename).write_text(content, encoding="utf-8")
+        path = self._safe_path(filename)
+        path.write_text(content, encoding="utf-8")
 
     def delete_topic(self, filename: str) -> None:
-        path = self._dir / filename
+        path = self._safe_path(filename)
         if path.exists():
             path.unlink()
 
