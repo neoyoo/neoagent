@@ -12,5 +12,6 @@ class NeoAgentConfig:
     max_turns: int = 30
     context_budget: int = 0
     max_result_size: int = 50000
+    auto_approve_tools: bool = False
     memory_dir: Path | None = None
     memory_project_key: str | None = None

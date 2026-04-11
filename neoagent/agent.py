@@ -22,7 +22,7 @@ class NeoAgent:
     def __init__(self, config: NeoAgentConfig) -> None:
         self._config = config
         self._provider = _create_provider(config)
-        self._permission = PermissionChecker(auto_approve=True)  # explicit opt-in for non-interactive
+        self._permission = PermissionChecker(auto_approve=config.auto_approve_tools)
         self._registry = ToolRegistry(max_result_size=config.max_result_size, permission_checker=self._permission)
         self._prompt_builder = PromptBuilder()
         self._prompt_builder.add_section(PromptSection(
