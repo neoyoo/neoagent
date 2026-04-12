@@ -237,3 +237,95 @@ def test_session_promoted_tools_deserialized_missing_key_defaults_to_empty():
     }
     s = _session_from_dict(d)
     assert s.state.promoted_tools == set()
+
+
+# ── Session.metadata + _storage + save_if_storage() + bind_storage() ──────────
+
+def test_session_metadata_default_empty():
+    """metadata must default to an empty dict."""
+    s = Session.create()
+    assert isinstance(s.metadata, dict)
+    assert s.metadata == {}
+
+
+def test_session_metadata_set_and_get():
+    """metadata can be set and retrieved."""
+    s = Session.create()
+    s.metadata["user_id"] = "neo"
+    s.metadata["env"] = "prod"
+    assert s.metadata["user_id"] == "neo"
+    assert s.metadata["env"] == "prod"
+
+
+def test_session_metadata_persisted(tmp_path: Path):
+    """metadata survives a save/load round-trip."""
+    store = JsonFileStorage(tmp_path)
+    s = Session.create(session_id="meta-rt")
+    s.metadata["key"] = "value"
+    store.save(s)
+    loaded = store.load("meta-rt")
+    assert loaded.metadata == {"key": "value"}
+
+
+def test_session_metadata_default_empty_on_old_json():
+    """Loading an old JSON without 'metadata' key must default to {}."""
+    d = {
+        "id": "legacy",
+        "created_at": "2026-01-01T00:00:00",
+        "updated_at": "2026-01-01T00:00:00",
+        "state": {
+            "previous_summary": None,
+            "compression_failures": 0,
+            "memory_tool_calls": 0,
+            "memory_token_baseline": 0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "promoted_tools": [],
+        },
+        "messages": [],
+        # No "metadata" key — simulates old persisted session
+    }
+    s = _session_from_dict(d)
+    assert s.metadata == {}
+
+
+def test_session_save_if_storage_skipped_without_binding():
+    """save_if_storage() must be a no-op when no storage is bound."""
+    s = Session.create()
+    s.metadata["x"] = 1
+    # Should not raise even without bound storage
+    s.save_if_storage()
+
+
+def test_session_save_if_storage_calls_storage(tmp_path: Path):
+    """save_if_storage() must call storage.save() when storage is bound."""
+    store = JsonFileStorage(tmp_path)
+    s = Session.create(session_id="auto-save")
+    s.metadata["step"] = "done"
+    s._storage = store
+    s.save_if_storage()
+    loaded = store.load("auto-save")
+    assert loaded.metadata == {"step": "done"}
+
+
+def test_session_bind_storage_enables_save_if_storage(tmp_path: Path):
+    """bind_storage() sets the internal storage so save_if_storage() works."""
+    store = JsonFileStorage(tmp_path)
+    s = Session.create(session_id="bind-test")
+    s.bind_storage(store)
+    s.metadata["bound"] = True
+    s.save_if_storage()
+    loaded = store.load("bind-test")
+    assert loaded.metadata["bound"] is True
+
+
+def test_session_storage_field_not_serialized(tmp_path: Path):
+    """_storage must NOT appear in the serialized JSON."""
+    store = JsonFileStorage(tmp_path)
+    s = Session.create(session_id="no-storage-in-json")
+    s.bind_storage(store)
+    store.save(s)
+    import json as _json
+    raw = _json.loads((tmp_path / "no-storage-in-json.json").read_text())
+    assert "_storage" not in raw
+    assert "storage" not in raw

@@ -31,6 +31,12 @@ class Session:
     state: SessionState
     created_at: datetime
     updated_at: datetime
+    metadata: dict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # _storage is not a dataclass field to avoid init/repr/serialization
+        # complications with underscore-prefixed names. We set it here.
+        object.__setattr__(self, "_storage", None)
 
     @classmethod
     def create(cls, session_id: str | None = None) -> "Session":
@@ -51,12 +57,23 @@ class Session:
         self.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
         storage.save(self)
 
+    def save_if_storage(self) -> None:
+        """Save to bound storage if one has been set via bind_storage(). No-op otherwise."""
+        storage = object.__getattribute__(self, "_storage")
+        if storage is not None:
+            self.save(storage)
+
+    def bind_storage(self, storage: "SessionStorage") -> None:
+        """Bind a storage backend so save_if_storage() can be called without explicit args."""
+        object.__setattr__(self, "_storage", storage)
+
     def fork(self, new_id: str | None = None) -> "Session":
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         return Session(
             id=new_id or str(uuid.uuid4()),
             messages=copy.deepcopy(self.messages),
             state=copy.deepcopy(self.state),
+            metadata=copy.deepcopy(self.metadata),
             created_at=now,
             updated_at=now,
         )
@@ -146,6 +163,7 @@ def _session_to_dict(session: Session) -> dict:
             "promoted_tools": sorted(session.state.promoted_tools),
         },
         "messages": [_message_to_dict(m) for m in session.messages],
+        "metadata": session.metadata,
     }
 
 
@@ -167,4 +185,5 @@ def _session_from_dict(data: dict) -> Session:
         state=state,
         created_at=datetime.fromisoformat(data["created_at"]),
         updated_at=datetime.fromisoformat(data["updated_at"]),
+        metadata=data.get("metadata", {}),
     )
