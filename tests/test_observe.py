@@ -1,15 +1,7 @@
 from __future__ import annotations
-import pytest
 from pathlib import Path
 from neoagent.observe import Observer
 from neoagent.core.types import TextBlock, ToolUseBlock
-
-
-@pytest.fixture
-def observer(tmp_path: Path) -> Observer:
-    obs = Observer(log_dir=tmp_path, console=False)
-    yield obs
-    obs.close()
 
 
 def test_creates_log_file(tmp_path: Path) -> None:

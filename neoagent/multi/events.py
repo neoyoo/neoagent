@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
 from neoagent.events import Event, TaskCompleteEvent, TaskDispatchEvent, WorkerEvent
-
-if TYPE_CHECKING:
-    pass
 
 __all__ = [
     "_setup_event_bubble",

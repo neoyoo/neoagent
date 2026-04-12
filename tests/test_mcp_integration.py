@@ -474,7 +474,7 @@ async def test_tool_search_updates_session_state_promoted_tools():
     """ToolSearchTool.execute() must write to session_state.promoted_tools."""
     from pydantic import create_model
     from neoagent.session import Session, SessionState
-    from neoagent.tools.builtin.tool_search import ToolSearchTool, ToolSearchInput
+    from neoagent.tools.builtin.tool_search import ToolSearchTool, ToolSearchInput, set_session_state
 
     class _MCPTool(BaseTool):
         name: str = "github__create_issue"
@@ -492,9 +492,9 @@ async def test_tool_search_updates_session_state_promoted_tools():
 
     tool = ToolSearchTool(deferred_registry=deferred, tool_registry=registry)
 
-    # Inject session state before calling execute (as QueryLoop does)
+    # Inject session state before calling execute (as QueryLoop does via set_session_state)
     session_state = SessionState()
-    tool._session_state = session_state
+    set_session_state(session_state)
 
     inp = ToolSearchInput(query="select:github__create_issue")
     result = await tool.execute(inp)

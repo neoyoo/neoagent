@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Awaitable, Callable, Literal
 
-from neoagent.core.types import Message
 from neoagent.providers.base import Response
 
 logger = logging.getLogger(__name__)

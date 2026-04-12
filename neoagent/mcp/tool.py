@@ -1,6 +1,6 @@
 from __future__ import annotations
 import logging
-from typing import TYPE_CHECKING, Any, Literal, get_args
+from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field, create_model
 from neoagent.tools.base import BaseTool
 from neoagent.core.types import ToolResult

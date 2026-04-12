@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 import threading
@@ -312,6 +311,8 @@ async def _run_worker(
         try:
             parsed = json.loads(ctx_item)
             role = parsed.get("role", "user")
+            if role not in ("user", "assistant"):
+                role = "user"
             content = parsed.get("content", ctx_item)
             messages.append(_Message(role=role, content=content))
         except (json.JSONDecodeError, AttributeError):
