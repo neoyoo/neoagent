@@ -12,11 +12,11 @@ from neoagent.multi.tools.spawn_worker import SpawnWorkerInput, SpawnWorkerTool
 def _make_orchestrator():
     orch = MagicMock()
     orch.max_depth = 2
-    orch._config = MagicMock()
-    orch._config.model = "claude-sonnet-4-20250514"
-    orch._config.api_key = "sk-test"
-    orch._config.provider = "anthropic"
-    orch._config.base_url = None
+    orch.config = MagicMock()
+    orch.config.model = "claude-sonnet-4-20250514"
+    orch.config.api_key = "sk-test"
+    orch.config.provider = "anthropic"
+    orch.config.base_url = None
     orch._tool_pool = {}
     orch._event_bus = MagicMock()
     orch._task_tracker = MagicMock()
