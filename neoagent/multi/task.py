@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import json
+import logging
 import threading
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    from neoagent.agent import NeoAgent
     from neoagent.core.types import Message
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -258,3 +264,98 @@ def _extract_work_summary(messages: "list[Message]") -> str:  # noqa: UP006
         return "（无有效工作摘要）"
 
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# _run_worker
+# ---------------------------------------------------------------------------
+
+
+async def _run_worker(
+    agent: "NeoAgent",
+    task: "Task",
+    tracker: "TaskTracker",
+) -> "TaskResult":
+    """Execute a worker NeoAgent with a Task.
+
+    Handles asyncio.timeout, CancelledError, and generic exceptions.
+    Returns a TaskResult in all cases.
+
+    The task.context items are treated as JSON-encoded Message dicts
+    ({"role": ..., "content": ...}).  Plain strings are wrapped as user
+    messages.  The task.instruction is always appended as the final user
+    message.
+    """
+    from neoagent.core.types import Message as _Message  # noqa: PLC0415
+    from neoagent.core.types import TextBlock as _TB  # noqa: PLC0415
+
+    # Build message list from context strings + instruction
+    messages: list[_Message] = []
+    for ctx_item in task.context:
+        try:
+            parsed = json.loads(ctx_item)
+            role = parsed.get("role", "user")
+            content = parsed.get("content", ctx_item)
+            messages.append(_Message(role=role, content=content))
+        except (json.JSONDecodeError, AttributeError):
+            # Treat as plain user message
+            messages.append(_Message(role="user", content=str(ctx_item)))
+
+    messages.append(_Message(role="user", content=task.instruction))
+
+    try:
+        async with asyncio.timeout(task.timeout):
+            result = await agent.run(messages=messages)
+
+        # Extract output from last assistant turn
+        output = ""
+        if result.turns:
+            last = result.turns[-1].response
+            if isinstance(last.content, list):
+                output = "\n".join(
+                    b.text for b in last.content if isinstance(b, _TB)
+                )
+            elif isinstance(last.content, str):
+                output = last.content
+
+        # Truncate to max_output_tokens (approximate: 4 chars/token)
+        max_chars = task.max_output_tokens * 4
+        if len(output) > max_chars:
+            output = output[:max_chars] + "\n[truncated]"
+
+        # Accumulate usage — agent doesn't expose per-turn token counts
+        # directly on response; default to zeros
+        usage = TokenUsage(input_tokens=0, output_tokens=0)
+
+        return TaskResult(
+            task_id=task.task_id,
+            status="completed",
+            output=output,
+            error=None,
+            usage=usage,
+            work_summary=None,
+            turns_completed=len(result.turns),
+        )
+
+    except asyncio.CancelledError:
+        logger.debug("_run_worker: task %r cancelled", task.task_id)
+        return TaskResult(
+            task_id=task.task_id,
+            status="cancelled",
+            output="",
+            error=None,
+            usage=None,
+            work_summary="（任务被取消）",
+            turns_completed=0,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("_run_worker: task %r failed: %s", task.task_id, exc)
+        return TaskResult(
+            task_id=task.task_id,
+            status="failed",
+            output="",
+            error=str(exc),
+            usage=None,
+            work_summary=None,
+            turns_completed=0,
+        )

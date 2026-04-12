@@ -121,7 +121,7 @@ def _create_worker_agent(card: WorkerCard, orchestrator: object, depth: int) -> 
     # Provide spawn capability only to workers below max_depth
     max_depth: int = orchestrator.max_depth  # type: ignore[attr-defined]
     if depth < max_depth:
-        agent.register_tool(SpawnWorkerTool())
+        agent.register_tool(SpawnWorkerTool(orchestrator=orchestrator, depth=depth))
 
     # Generate a stable task_id for event-bubble labelling
     import uuid
