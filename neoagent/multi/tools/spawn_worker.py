@@ -90,14 +90,19 @@ class SpawnWorkerTool(BaseTool):
             self._orchestrator, task_id, card.name, input.instruction, self._depth
         )
 
-        # 5. Track then execute under semaphore; register asyncio.Task for cancellation
+        # 5. Track first, then wrap everything (semaphore wait + run) in a single
+        # asyncio.Task so cancel_task() can interrupt even before semaphore acquired.
         self._orchestrator._task_tracker.track(task, worker_name=card.name)
-        async with self._orchestrator._semaphore:
-            asyncio_task = asyncio.create_task(
-                _run_worker(worker_agent, task, self._orchestrator._task_tracker)
-            )
-            self._orchestrator._task_tracker.set_asyncio_task(task_id, asyncio_task)
-            result = await asyncio_task
+
+        async def _run_with_semaphore() -> "TaskResult":
+            async with self._orchestrator._semaphore:
+                return await _run_worker(
+                    worker_agent, task, self._orchestrator._task_tracker
+                )
+
+        asyncio_task = asyncio.create_task(_run_with_semaphore())
+        self._orchestrator._task_tracker.set_asyncio_task(task_id, asyncio_task)
+        result = await asyncio_task
 
         # 6. Record completion and emit complete event
         self._orchestrator._task_tracker.complete(task_id, result)

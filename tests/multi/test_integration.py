@@ -641,6 +641,80 @@ class TestSemaphoreLimit:
         assert orch._semaphore._value == 5
 
 
+# ---------------------------------------------------------------------------
+# Real worker factory (no _create_worker_agent mock)
+# ---------------------------------------------------------------------------
+
+
+def _mock_full_provider() -> MagicMock:
+    """Provider mock that supports real agent.run() — create() returns a proper Response."""
+    from neoagent.core.types import TextBlock as _TextBlock
+    from neoagent.providers.base import Response as _Response
+
+    p = MagicMock()
+    p.get_context_window.return_value = 200_000
+    p.create = AsyncMock(
+        return_value=_Response(
+            content=[_TextBlock(text="done")],
+            stop_reason="end_turn",
+            input_tokens=10,
+            output_tokens=5,
+        )
+    )
+    return p
+
+
+class TestRealWorkerFactory:
+    """Tests that go through real _create_worker_agent without mocking it.
+
+    Only the LLM provider is mocked. This catches config/attribute bugs
+    that tests using mocked _create_worker_agent cannot detect.
+    """
+
+    @pytest.mark.asyncio
+    @patch("neoagent.agent._create_provider")
+    async def test_delegate_task_real_worker_factory(self, mock_prov: MagicMock) -> None:
+        """delegate_task with real _create_worker_agent must not raise AttributeError."""
+        mock_prov.return_value = _mock_full_provider()
+
+        config = NeoAgentConfig(api_key="test", model="claude-haiku-4-5")
+        orch = Orchestrator(config)
+
+        card = WorkerCard(
+            name="helper",
+            description="A helper",
+            instruction="You are a helper.",
+            tags=(),
+            model=None,
+            tools=(),
+        )
+        orch.register_worker(card)
+
+        tool = orch._brain._registry.get_tool("delegate_task")
+        assert tool is not None
+
+        result = await tool.execute(DelegateTaskInput(worker_name="helper", instruction="say hi"))
+
+        assert not result.is_error, f"Expected success, got error: {result.output}"
+
+    @pytest.mark.asyncio
+    @patch("neoagent.agent._create_provider")
+    async def test_spawn_worker_real_worker_factory(self, mock_prov: MagicMock) -> None:
+        """spawn_worker with real _create_worker_agent must not raise AttributeError."""
+        mock_prov.return_value = _mock_full_provider()
+
+        config = NeoAgentConfig(api_key="test", model="claude-haiku-4-5")
+        orch = Orchestrator(config)
+
+        tool = orch._brain._registry.get_tool("spawn_worker")
+        assert tool is not None
+
+        md = "---\nname: temp-worker\nmodel: claude-haiku-4-5\ntags: []\ntools: []\n---\nYou are a temp helper."
+        result = await tool.execute(SpawnWorkerInput(md_definition=md, instruction="say hello"))
+
+        assert not result.is_error, f"Expected success, got error: {result.output}"
+
+
 def test_delegate_task_is_concurrent_safe() -> None:
     """DelegateTaskTool must be marked concurrent safe for parallel execution."""
     from unittest.mock import MagicMock, patch
