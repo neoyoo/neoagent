@@ -239,6 +239,34 @@ class NeoAgent:
             self._observer.close()
             self._observer = None
 
+    def enable_metrics(self) -> "MetricsCollector":
+        """Enable per-turn and session metrics collection. Returns a MetricsCollector.
+
+        The collector subscribes to ProviderRequestEvent, ProviderResponseEvent,
+        ToolCallEvent and TurnCompleteEvent on the EventBus and accumulates
+        TurnMetrics for each completed turn.
+
+        Usage::
+
+            collector = agent.enable_metrics()
+            await agent.chat("hello")
+            sm = collector.get_session_metrics()
+            print(sm.total_input_tokens, sm.duration_ms)
+        """
+        from neoagent.eval.metrics import MetricsCollector
+        from neoagent.events import (
+            ProviderRequestEvent,
+            ProviderResponseEvent,
+            ToolCallEvent,
+            TurnCompleteEvent,
+        )
+        collector = MetricsCollector()
+        self._event_bus.subscribe(ProviderRequestEvent, collector._on_provider_request)
+        self._event_bus.subscribe(ProviderResponseEvent, collector._on_provider_response)
+        self._event_bus.subscribe(ToolCallEvent, collector._on_tool_call)
+        self._event_bus.subscribe(TurnCompleteEvent, collector._on_turn_complete)
+        return collector
+
     def enable_usage_tracking(self) -> "UsageTracker":
         """Enable token usage tracking. Returns a UsageTracker for inspection.
 
