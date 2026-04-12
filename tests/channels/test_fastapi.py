@@ -265,3 +265,30 @@ async def test_stream_endpoint_not_registered_when_streaming_false():
             json={"messages": [{"role": "user", "content": "hi"}]},
         )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_stream_emits_error_on_agent_exception():
+    """When agent.run() raises, SSE stream must emit an error event."""
+    agent = _make_agent()
+    agent.event_bus.subscribe = MagicMock()
+    agent.event_bus.unsubscribe = MagicMock()
+    agent.run = AsyncMock(side_effect=RuntimeError("boom"))
+    channel = _make_channel(agent)
+
+    async with _async_client(channel) as client:
+        async with client.stream(
+            "POST",
+            "/v1/run/stream",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+        ) as resp:
+            assert resp.status_code == 200
+            lines = []
+            async for line in resp.aiter_lines():
+                lines.append(line)
+
+    data_lines = [l for l in lines if l.startswith("data: ")]
+    assert len(data_lines) >= 1
+    last = json.loads(data_lines[-1][6:])
+    assert last["type"] == "error"
+    assert "boom" in last["message"]

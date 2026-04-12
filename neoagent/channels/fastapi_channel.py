@@ -136,9 +136,9 @@ class FastAPIChannel(Channel):
 
     Exposes two endpoints:
 
-    - ``POST /v1/run``         — synchronous, returns full ConversationResult JSON
-    - ``POST /v1/run/stream``  — SSE stream of agent events (added in Task 3)
     - ``GET  /v1/health``      — liveness probe
+    - ``POST /v1/run``         — synchronous, returns full ConversationResult JSON
+    - ``POST /v1/run/stream``  — SSE stream of agent events
 
     Each request creates a fresh, stateless session (no cross-request memory).
 
@@ -226,7 +226,7 @@ class FastAPIChannel(Channel):
         if self._streaming:
             StreamingResponse = fastapi_module.responses.StreamingResponse
 
-            async def run_stream(req: RunRequest):
+            async def run_stream(req):
                 msgs = [Message(role=m.role, content=m.content) for m in req.messages]
                 return StreamingResponse(
                     self._sse_generator(msgs, req.max_turns),
@@ -265,10 +265,11 @@ class FastAPIChannel(Channel):
         """
         queue: asyncio.Queue[Event | BaseException | None] = asyncio.Queue()
 
-        # Register sync handlers that push events to the async queue
+        # Register sync handlers that push events to the async queue.
+        # Each handler only needs to capture `queue` (same for all event types).
         handlers: dict[type, object] = {}
         for event_type in _STREAM_EVENT_TYPES:
-            def _make_handler(et=event_type):
+            def _make_handler():
                 def _handler(ev: Event) -> None:
                     queue.put_nowait(ev)
                 return _handler
