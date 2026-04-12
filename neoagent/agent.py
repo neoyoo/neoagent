@@ -47,7 +47,7 @@ class NeoAgent:
         self._prompt_builder = PromptBuilder()
         self._prompt_builder.add_section(PromptSection(
             name="identity",
-            content="You are neoagent, a helpful AI assistant.",
+            content=config.system_prompt or "You are neoagent, a helpful AI assistant.",
             priority=0, is_static=True,
         ))
         self._loop = QueryLoop(
@@ -116,7 +116,7 @@ class NeoAgent:
             return last.content if isinstance(last.content, str) else ""
         return ""
 
-    async def run(self, messages: list[Message], session: Session | None = None) -> ConversationResult:
+    async def run(self, messages: list[Message], session: Session | None = None, *, max_turns: int | None = None) -> ConversationResult:
         """Low-level interface: run the loop against a message list.
 
         If session is None, a transient session is created for this call.
@@ -134,7 +134,7 @@ class NeoAgent:
             )
         else:
             session.messages = list(messages)
-        return await self._loop.run(session=session)
+        return await self._loop.run(session=session, max_turns=max_turns)
 
     def enable_memory(
         self,

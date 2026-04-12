@@ -16,3 +16,4 @@ class NeoAgentConfig:
     memory_dir: Path | None = None
     memory_project_key: str | None = None
     session_dir: Path | None = None
+    system_prompt: str | None = None
