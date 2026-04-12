@@ -247,6 +247,7 @@ class QueryLoop:
                         items_stored=items_stored,
                     ))
                 msgs.append(Message(role="assistant", content=response.content))
+                _session.save_if_storage()  # per-turn auto-save (end_turn)
                 return ConversationResult(turns=turns, reason="completed")
             if self._executor is None:
                 raise RuntimeError(
@@ -269,6 +270,7 @@ class QueryLoop:
             ))
             if self._on_turn:
                 self._on_turn(turn)
+            _session.save_if_storage()  # per-turn auto-save (tool_use)
         return ConversationResult(turns=turns, reason="max_turns")
 
     async def _retry_with_higher_max(self, system, messages, tools):
