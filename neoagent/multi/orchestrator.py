@@ -52,6 +52,10 @@ class Orchestrator:
         # Brain: the orchestrator's own NeoAgent
         self._brain = NeoAgent(config)
 
+        # Expose the brain's EventBus directly on the orchestrator for tools
+        # and event subscribers to use (e.g. TaskDispatchEvent, WorkerEvent).
+        self._event_bus = self._brain._event_bus
+
         # Register 5 internal tools onto the brain
         self._register_internal_tools()
 

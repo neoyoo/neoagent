@@ -70,7 +70,12 @@ class WorkerPool:
 # ---------------------------------------------------------------------------
 
 
-def _create_worker_agent(card: WorkerCard, orchestrator: object, depth: int) -> "NeoAgent":
+def _create_worker_agent(
+    card: WorkerCard,
+    orchestrator: object,
+    depth: int,
+    task_id: str = "",
+) -> "NeoAgent":
     """Create an independent NeoAgent instance configured from *card*.
 
     Steps:
@@ -123,9 +128,11 @@ def _create_worker_agent(card: WorkerCard, orchestrator: object, depth: int) -> 
     if depth < max_depth:
         agent.register_tool(SpawnWorkerTool(orchestrator=orchestrator, depth=depth))
 
-    # Generate a stable task_id for event-bubble labelling
-    import uuid
-    task_id = str(uuid.uuid4())
+    # Use the provided task_id for event-bubble labelling; fall back to a new UUID
+    # if not supplied (e.g. when worker is created before a Task is assigned).
+    if not task_id:
+        import uuid
+        task_id = str(uuid.uuid4())
 
     _setup_event_bubble(agent, orchestrator, card.name, task_id, depth)
 
