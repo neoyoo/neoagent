@@ -446,7 +446,7 @@ class TestRunWorkerSession:
         config = NeoAgentConfig(api_key="test", model="claude-haiku-4-5")
         with patch("neoagent.agent._create_provider") as mock_prov:
             provider_mock = MagicMock()
-            provider_mock.complete = fake_complete
+            provider_mock.create = fake_complete
             provider_mock.get_context_window.return_value = 100_000
             mock_prov.return_value = provider_mock
             agent = NeoAgent(config)
@@ -483,7 +483,7 @@ class TestRunWorkerSession:
         config = NeoAgentConfig(api_key="test", model="claude-haiku-4-5")
         with patch("neoagent.agent._create_provider") as mock_prov:
             provider_mock = MagicMock()
-            provider_mock.complete = fake_complete
+            provider_mock.create = fake_complete
             provider_mock.get_context_window.return_value = 100_000
             mock_prov.return_value = provider_mock
             agent = NeoAgent(config)
