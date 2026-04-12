@@ -111,15 +111,30 @@ class TaskTracker:
         self._results: dict[str, TaskResult] = {}
         # task_id -> asyncio.Task (for cancellation)
         self._asyncio_tasks: dict[str, asyncio.Task] = {}  # type: ignore[type-arg]
+        # task_id -> metadata dict (worker_name, instruction snapshot, etc.)
+        self._metadata: dict[str, dict] = {}
 
     # ------------------------------------------------------------------
     # Registration
     # ------------------------------------------------------------------
 
-    def track(self, task: Task) -> None:
-        """Register *task* as active."""
+    def track(self, task: Task, *, worker_name: str = "") -> None:
+        """Register *task* as active.
+
+        Parameters
+        ----------
+        task:
+            The task to register.
+        worker_name:
+            Optional name of the worker that will execute this task.
+            Stored in metadata and surfaced via list_all().
+        """
         with self._lock:
             self._tasks[task.task_id] = task
+            self._metadata[task.task_id] = {
+                "worker_name": worker_name,
+                "instruction": task.instruction,
+            }
 
     def set_asyncio_task(
         self, task_id: str, asyncio_task: "asyncio.Task[object]"
@@ -162,7 +177,7 @@ class TaskTracker:
     def list_all(self) -> list[dict]:
         """Return summary dicts for all tracked tasks.
 
-        Each dict has: task_id, instruction (truncated), status.
+        Each dict has: task_id, instruction (truncated), status, worker_name.
         Status is the TaskResult.status for completed tasks, else "active".
         """
         with self._lock:
@@ -170,11 +185,13 @@ class TaskTracker:
             for task_id, task in self._tasks.items():
                 result = self._results.get(task_id)
                 status = result.status if result is not None else "active"
+                meta = self._metadata.get(task_id, {})
                 summaries.append(
                     {
                         "task_id": task_id,
                         "instruction": _truncate(task.instruction),
                         "status": status,
+                        "worker_name": meta.get("worker_name", ""),
                     }
                 )
             return summaries
@@ -339,13 +356,40 @@ async def _run_worker(
 
     except asyncio.CancelledError:
         logger.debug("_run_worker: task %r cancelled", task.task_id)
+        # Try to get messages accumulated by the agent's session
+        try:
+            session_msgs = list(agent.session.messages)
+            if len(session_msgs) > len(messages):
+                messages = session_msgs
+        except Exception:
+            pass
+        summary = _extract_work_summary(messages) or "（任务被取消）"
         return TaskResult(
             task_id=task.task_id,
             status="cancelled",
             output="",
             error=None,
             usage=None,
-            work_summary="（任务被取消）",
+            work_summary=summary,
+            turns_completed=0,
+        )
+    except TimeoutError:
+        logger.debug("_run_worker: task %r timed out", task.task_id)
+        # Try to get messages accumulated by the agent's session
+        try:
+            session_msgs = list(agent.session.messages)
+            if len(session_msgs) > len(messages):
+                messages = session_msgs
+        except Exception:
+            pass
+        summary = _extract_work_summary(messages) or "（任务被取消）"
+        return TaskResult(
+            task_id=task.task_id,
+            status="cancelled",
+            error="timeout",
+            output="",
+            usage=None,
+            work_summary=summary,
             turns_completed=0,
         )
     except Exception as exc:  # noqa: BLE001

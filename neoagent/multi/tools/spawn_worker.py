@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import TYPE_CHECKING
@@ -17,46 +18,6 @@ if TYPE_CHECKING:
     from neoagent.multi.task import TaskResult
 
 logger = logging.getLogger(__name__)
-
-
-def _emit_dispatch_event(
-    orchestrator: "Orchestrator",
-    task_id: str,
-    worker_name: str,
-    instruction: str,
-    depth: int,
-) -> None:
-    """Emit TaskDispatchEvent on the orchestrator's event bus. Never raises."""
-    from neoagent.events import TaskDispatchEvent
-    try:
-        orchestrator._event_bus.emit(TaskDispatchEvent(
-            task_id=task_id,
-            worker_name=worker_name,
-            instruction=instruction,
-            depth=depth,
-        ))
-    except Exception:
-        logger.debug("_emit_dispatch_event: failed to emit for task %r", task_id)
-
-
-def _emit_complete_event(
-    orchestrator: "Orchestrator",
-    result: "TaskResult",
-    worker_name: str,
-    depth: int,
-) -> None:
-    """Emit TaskCompleteEvent on the orchestrator's event bus. Never raises."""
-    from neoagent.events import TaskCompleteEvent
-    try:
-        orchestrator._event_bus.emit(TaskCompleteEvent(
-            task_id=result.task_id,
-            worker_name=worker_name,
-            status=result.status,
-            turns_completed=result.turns_completed,
-            usage=result.usage,
-        ))
-    except Exception:
-        logger.debug("_emit_complete_event: failed to emit for task %r", result.task_id)
 
 
 class SpawnWorkerInput(BaseModel):
@@ -96,7 +57,11 @@ class SpawnWorkerTool(BaseTool):
     async def execute(self, input: BaseModel) -> ToolResult:  # type: ignore[override]
         assert isinstance(input, SpawnWorkerInput)
 
-        from neoagent.multi.tools import _format_task_result  # noqa: PLC0415
+        from neoagent.multi.tools import (  # noqa: PLC0415
+            _emit_complete_event,
+            _emit_dispatch_event,
+            _format_task_result,
+        )
 
         # 1. Parse md_definition → WorkerCard
         try:
@@ -108,8 +73,8 @@ class SpawnWorkerTool(BaseTool):
                 is_error=True,
             )
 
-        # 2. Build Task first so task_id is known for event emission
-        task_id = str(uuid.uuid4())[:8]
+        # 2. Build Task with full UUID task_id
+        task_id = str(uuid.uuid4())
         task = Task(
             task_id=task_id,
             instruction=input.instruction,
@@ -125,10 +90,14 @@ class SpawnWorkerTool(BaseTool):
             self._orchestrator, task_id, card.name, input.instruction, self._depth
         )
 
-        # 5. Track then execute under semaphore
-        self._orchestrator._task_tracker.track(task)
+        # 5. Track then execute under semaphore; register asyncio.Task for cancellation
+        self._orchestrator._task_tracker.track(task, worker_name=card.name)
         async with self._orchestrator._semaphore:
-            result = await _run_worker(worker_agent, task, self._orchestrator._task_tracker)
+            asyncio_task = asyncio.create_task(
+                _run_worker(worker_agent, task, self._orchestrator._task_tracker)
+            )
+            self._orchestrator._task_tracker.set_asyncio_task(task_id, asyncio_task)
+            result = await asyncio_task
 
         # 6. Record completion and emit complete event
         self._orchestrator._task_tracker.complete(task_id, result)

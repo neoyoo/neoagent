@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import logging
+from typing import TYPE_CHECKING
+
 from neoagent.core.types import ToolResult as _ToolResult
 from neoagent.multi.tools.cancel_task import CancelTaskTool
 from neoagent.multi.tools.delegate_task import DelegateTaskTool
 from neoagent.multi.tools.list_tools import ListTasksTool, ListWorkersTool
 from neoagent.multi.tools.spawn_worker import SpawnWorkerTool
+
+if TYPE_CHECKING:
+    from neoagent.multi.orchestrator import Orchestrator
+    from neoagent.multi.task import TaskResult
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "SpawnWorkerTool",
@@ -13,7 +22,49 @@ __all__ = [
     "ListWorkersTool",
     "ListTasksTool",
     "_format_task_result",
+    "_emit_dispatch_event",
+    "_emit_complete_event",
 ]
+
+
+def _emit_dispatch_event(
+    orchestrator: "Orchestrator",
+    task_id: str,
+    worker_name: str,
+    instruction: str,
+    depth: int,
+) -> None:
+    """Emit TaskDispatchEvent on the orchestrator's event bus. Never raises."""
+    from neoagent.events import TaskDispatchEvent  # noqa: PLC0415
+    try:
+        orchestrator._event_bus.emit(TaskDispatchEvent(
+            task_id=task_id,
+            worker_name=worker_name,
+            instruction=instruction,
+            depth=depth,
+        ))
+    except Exception:
+        logger.debug("_emit_dispatch_event: failed to emit for task %r", task_id)
+
+
+def _emit_complete_event(
+    orchestrator: "Orchestrator",
+    result: "TaskResult",
+    worker_name: str,
+    depth: int,
+) -> None:
+    """Emit TaskCompleteEvent on the orchestrator's event bus. Never raises."""
+    from neoagent.events import TaskCompleteEvent  # noqa: PLC0415
+    try:
+        orchestrator._event_bus.emit(TaskCompleteEvent(
+            task_id=result.task_id,
+            worker_name=worker_name,
+            status=result.status,
+            turns_completed=result.turns_completed,
+            usage=result.usage,
+        ))
+    except Exception:
+        logger.debug("_emit_complete_event: failed to emit for task %r", result.task_id)
 
 
 def _format_task_result(result: object) -> _ToolResult:  # type: ignore[return]

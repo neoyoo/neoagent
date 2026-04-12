@@ -15,12 +15,8 @@ from neoagent.core.types import ConversationResult, Message, TextBlock, Turn
 from neoagent.multi.orchestrator import Orchestrator
 from neoagent.multi.task import Task, TaskResult, TokenUsage
 from neoagent.multi.tools.cancel_task import CancelTaskInput, CancelTaskTool
-from neoagent.multi.tools.delegate_task import (
-    DelegateTaskInput,
-    DelegateTaskTool,
-    _emit_complete_event,
-    _emit_dispatch_event,
-)
+from neoagent.multi.tools.delegate_task import DelegateTaskInput, DelegateTaskTool
+from neoagent.multi.tools import _emit_complete_event, _emit_dispatch_event
 from neoagent.multi.tools.spawn_worker import SpawnWorkerInput, SpawnWorkerTool
 from neoagent.multi.worker import WorkerCard, _create_worker_agent
 
