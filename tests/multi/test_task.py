@@ -408,3 +408,92 @@ class TestExtractWorkSummary:
         result = _extract_work_summary([user_msg, tool_msg, text_msg])
         assert "read_file" in result
         assert "Task completed successfully" in result
+
+
+# ---------------------------------------------------------------------------
+# _run_worker session integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunWorkerSession:
+    """Tests that _run_worker uses explicit Session so work_summary is real."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_work_summary_contains_real_messages(self) -> None:
+        """On CancelledError, work_summary must reflect actual agent messages."""
+        import asyncio
+        from unittest.mock import MagicMock, patch
+        from neoagent.config import NeoAgentConfig
+        from neoagent.agent import NeoAgent
+        from neoagent.multi.task import Task, TaskTracker, _run_worker
+        from neoagent.providers.base import Response
+
+        call_count = 0
+        tool_use_block = ToolUseBlock(id="tu1", name="read_file", input={"path": "/foo"})
+        first_response = Response(
+            content=[tool_use_block],
+            stop_reason="tool_use",
+            usage={"input_tokens": 10, "output_tokens": 5},
+        )
+
+        async def fake_complete(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return first_response
+            raise asyncio.CancelledError()
+
+        config = NeoAgentConfig(api_key="test", model="claude-haiku-4-5")
+        with patch("neoagent.agent._create_provider") as mock_prov:
+            provider_mock = MagicMock()
+            provider_mock.complete = fake_complete
+            provider_mock.get_context_window.return_value = 100_000
+            mock_prov.return_value = provider_mock
+            agent = NeoAgent(config)
+
+        task = Task.create(instruction="read /foo and summarize")
+        tracker = TaskTracker()
+        tracker.track(task)
+
+        result = await _run_worker(agent, task, tracker)
+
+        assert result.status == "cancelled"
+        assert result.work_summary is not None
+        assert "read_file" in result.work_summary, (
+            f"Expected 'read_file' in work_summary, got: {result.work_summary!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_success_work_summary_populated(self) -> None:
+        """On success, work_summary should contain last assistant output."""
+        from unittest.mock import MagicMock, patch
+        from neoagent.config import NeoAgentConfig
+        from neoagent.agent import NeoAgent
+        from neoagent.multi.task import Task, TaskTracker, _run_worker
+        from neoagent.core.types import TextBlock
+        from neoagent.providers.base import Response
+
+        async def fake_complete(*args, **kwargs):
+            return Response(
+                content=[TextBlock(text="Analysis complete.")],
+                stop_reason="end_turn",
+                usage={"input_tokens": 10, "output_tokens": 8},
+            )
+
+        config = NeoAgentConfig(api_key="test", model="claude-haiku-4-5")
+        with patch("neoagent.agent._create_provider") as mock_prov:
+            provider_mock = MagicMock()
+            provider_mock.complete = fake_complete
+            provider_mock.get_context_window.return_value = 100_000
+            mock_prov.return_value = provider_mock
+            agent = NeoAgent(config)
+
+        task = Task.create(instruction="analyze this")
+        tracker = TaskTracker()
+        tracker.track(task)
+
+        result = await _run_worker(agent, task, tracker)
+
+        assert result.status == "completed"
+        assert result.work_summary is not None
+        assert "Analysis complete." in result.work_summary

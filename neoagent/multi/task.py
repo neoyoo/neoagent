@@ -320,9 +320,13 @@ async def _run_worker(
 
     messages.append(_Message(role="user", content=task.instruction))
 
+    from neoagent.session import Session as _Session  # noqa: PLC0415
+
+    _session = _Session.create()
+
     try:
         async with asyncio.timeout(task.timeout):
-            result = await agent.run(messages=messages)
+            result = await agent.run(messages=messages, session=_session)
 
         # Extract output from last assistant turn
         output = ""
@@ -343,6 +347,7 @@ async def _run_worker(
         # Accumulate usage — agent doesn't expose per-turn token counts
         # directly on response; default to zeros
         usage = TokenUsage(input_tokens=0, output_tokens=0)
+        work_summary = _extract_work_summary(_session.messages)
 
         return TaskResult(
             task_id=task.task_id,
@@ -350,20 +355,13 @@ async def _run_worker(
             output=output,
             error=None,
             usage=usage,
-            work_summary=None,
+            work_summary=work_summary,
             turns_completed=len(result.turns),
         )
 
     except asyncio.CancelledError:
         logger.debug("_run_worker: task %r cancelled", task.task_id)
-        # Try to get messages accumulated by the agent's session
-        try:
-            session_msgs = list(agent.session.messages)
-            if len(session_msgs) > len(messages):
-                messages = session_msgs
-        except Exception:
-            pass
-        summary = _extract_work_summary(messages) or "（任务被取消）"
+        summary = _extract_work_summary(_session.messages) or "（任务被取消）"
         return TaskResult(
             task_id=task.task_id,
             status="cancelled",
@@ -375,14 +373,7 @@ async def _run_worker(
         )
     except TimeoutError:
         logger.debug("_run_worker: task %r timed out", task.task_id)
-        # Try to get messages accumulated by the agent's session
-        try:
-            session_msgs = list(agent.session.messages)
-            if len(session_msgs) > len(messages):
-                messages = session_msgs
-        except Exception:
-            pass
-        summary = _extract_work_summary(messages) or "（任务被取消）"
+        summary = _extract_work_summary(_session.messages) or "（任务被取消）"
         return TaskResult(
             task_id=task.task_id,
             status="cancelled",
