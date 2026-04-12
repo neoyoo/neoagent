@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 from dataclasses import dataclass
@@ -111,8 +112,6 @@ def _create_worker_agent(
 
     agent = NeoAgent(worker_config)
 
-    import copy as _copy  # noqa: PLC0415
-
     # Register only tools the card is authorised to use that exist in the pool
     for tool_name in card.tools:
         tool = tool_pool.get(tool_name)
@@ -123,7 +122,7 @@ def _create_worker_agent(
                 card.name,
             )
             continue
-        agent.register_tool(_copy.copy(tool))  # type: ignore[arg-type]
+        agent.register_tool(copy.copy(tool))  # type: ignore[arg-type]
 
     # Provide spawn capability only to workers below max_depth
     max_depth: int = orchestrator.max_depth  # type: ignore[attr-defined]
