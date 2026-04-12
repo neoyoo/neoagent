@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import dataclasses
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from neoagent.multi.worker import WorkerCard, WorkerPool
+from neoagent.multi.worker import WorkerCard, WorkerPool, _create_worker_agent
 
 
 class TestWorkerCard:
@@ -165,3 +166,173 @@ class TestWorkerPool:
         assert pool.size == 2
         pool.remove("p")
         assert pool.size == 1
+
+
+# ---------------------------------------------------------------------------
+# TestCreateWorkerAgent
+# ---------------------------------------------------------------------------
+
+
+def _make_orchestrator(model: str = "claude-opus-4", max_depth: int = 2, tool_pool: dict | None = None):
+    """Build a minimal orchestrator mock with the attributes _create_worker_agent needs."""
+    from neoagent.config import NeoAgentConfig
+    from neoagent.events import EventBus
+
+    config = NeoAgentConfig(api_key="test-key", model=model)
+    orch = MagicMock()
+    orch._config = config
+    orch._tool_pool = tool_pool if tool_pool is not None else {}
+    orch.max_depth = max_depth
+    # Provide a real EventBus so _setup_event_bubble can call subscribe_all
+    orch._event_bus = EventBus()
+    return orch
+
+
+def _make_worker_card(
+    name: str = "worker",
+    model: str | None = None,
+    tools: tuple[str, ...] = (),
+    instruction: str = "You are a worker.",
+) -> WorkerCard:
+    return WorkerCard(
+        name=name,
+        description="Test worker",
+        instruction=instruction,
+        tags=(),
+        model=model,
+        tools=tools,
+    )
+
+
+class TestCreateWorkerAgent:
+    """Tests for _create_worker_agent factory function."""
+
+    def test_returns_neoagent(self) -> None:
+        from neoagent.agent import NeoAgent
+
+        orch = _make_orchestrator()
+        card = _make_worker_card()
+
+        with patch("neoagent.agent._create_provider") as mock_provider:
+            mock_provider.return_value = MagicMock()
+            result = _create_worker_agent(card, orch, depth=0)
+
+        assert isinstance(result, NeoAgent)
+
+    def test_uses_card_model(self) -> None:
+        orch = _make_orchestrator(model="claude-opus-4")
+        card = _make_worker_card(model="claude-haiku-4")
+
+        with patch("neoagent.agent._create_provider") as mock_provider:
+            mock_provider.return_value = MagicMock()
+            result = _create_worker_agent(card, orch, depth=0)
+
+        assert result._config.model == "claude-haiku-4"
+
+    def test_falls_back_to_orchestrator_model(self) -> None:
+        orch = _make_orchestrator(model="claude-opus-4")
+        card = _make_worker_card(model=None)
+
+        with patch("neoagent.agent._create_provider") as mock_provider:
+            mock_provider.return_value = MagicMock()
+            result = _create_worker_agent(card, orch, depth=0)
+
+        assert result._config.model == "claude-opus-4"
+
+    def test_system_prompt_set_from_card_instruction(self) -> None:
+        orch = _make_orchestrator()
+        card = _make_worker_card(instruction="You are a precise coder.")
+
+        with patch("neoagent.agent._create_provider") as mock_provider:
+            mock_provider.return_value = MagicMock()
+            result = _create_worker_agent(card, orch, depth=0)
+
+        assert result._config.system_prompt == "You are a precise coder."
+
+    def test_registers_only_authorized_tools(self) -> None:
+        from neoagent.tools.base import BaseTool
+        from pydantic import BaseModel
+        from neoagent.core.types import ToolResult
+
+        class _FakeTool(BaseTool):
+            name = "read"
+            description = "reads"
+            input_model = BaseModel
+            permission = "auto"
+
+            async def execute(self, input):
+                return ToolResult(content="ok")
+
+        fake_read = _FakeTool()
+        tool_pool = {"read": fake_read}
+
+        orch = _make_orchestrator(tool_pool=tool_pool, max_depth=0)
+        card = _make_worker_card(tools=("read",))
+
+        with patch("neoagent.agent._create_provider") as mock_provider:
+            mock_provider.return_value = MagicMock()
+            result = _create_worker_agent(card, orch, depth=0)
+
+        registered = result._registry.all_tools()
+        assert "read" in registered
+
+    def test_missing_tool_in_pool_is_skipped(self) -> None:
+        """Card requests a tool that doesn't exist in pool — should not raise."""
+        orch = _make_orchestrator(tool_pool={}, max_depth=0)
+        card = _make_worker_card(tools=("nonexistent_tool",))
+
+        with patch("neoagent.agent._create_provider") as mock_provider:
+            mock_provider.return_value = MagicMock()
+            # Should not raise
+            result = _create_worker_agent(card, orch, depth=0)
+
+        registered = result._registry.all_tools()
+        assert "nonexistent_tool" not in registered
+
+    def test_depth_below_max_registers_spawn_worker(self) -> None:
+        orch = _make_orchestrator(max_depth=3)
+        card = _make_worker_card()
+
+        with patch("neoagent.agent._create_provider") as mock_provider:
+            mock_provider.return_value = MagicMock()
+            result = _create_worker_agent(card, orch, depth=2)  # 2 < 3
+
+        schemas = result._registry.get_schemas()
+        schema_names = {s["name"] for s in schemas}
+        assert "spawn_worker" in schema_names
+
+    def test_depth_at_max_no_spawn_worker(self) -> None:
+        orch = _make_orchestrator(max_depth=3)
+        card = _make_worker_card()
+
+        with patch("neoagent.agent._create_provider") as mock_provider:
+            mock_provider.return_value = MagicMock()
+            result = _create_worker_agent(card, orch, depth=3)  # 3 == max_depth
+
+        schemas = result._registry.get_schemas()
+        schema_names = {s["name"] for s in schemas}
+        assert "spawn_worker" not in schema_names
+
+    def test_event_bubble_called(self) -> None:
+        orch = _make_orchestrator(max_depth=0)
+        card = _make_worker_card(name="my-worker")
+
+        # Patch at the source module where _setup_event_bubble is defined.
+        # The function is imported inside _create_worker_agent via
+        # "from neoagent.multi.events import _setup_event_bubble", so we
+        # intercept it at the module level.
+        with patch("neoagent.agent._create_provider") as mock_provider, \
+             patch("neoagent.multi.events._setup_event_bubble") as mock_bubble:
+            mock_provider.return_value = MagicMock()
+            result = _create_worker_agent(card, orch, depth=0)
+
+        mock_bubble.assert_called_once()
+        args = mock_bubble.call_args[0]
+        # args: (agent, orchestrator, worker_name, task_id, depth)
+        from neoagent.agent import NeoAgent
+        assert isinstance(args[0], NeoAgent)
+        assert args[1] is orch
+        assert args[2] == "my-worker"
+        # args[3] is a UUID string — just check it's a non-empty string
+        assert isinstance(args[3], str) and len(args[3]) > 0
+        assert args[4] == 0

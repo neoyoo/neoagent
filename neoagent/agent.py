@@ -47,7 +47,7 @@ class NeoAgent:
         self._prompt_builder = PromptBuilder()
         self._prompt_builder.add_section(PromptSection(
             name="identity",
-            content="You are neoagent, a helpful AI assistant.",
+            content=config.system_prompt or "You are neoagent, a helpful AI assistant.",
             priority=0, is_static=True,
         ))
         self._loop = QueryLoop(
