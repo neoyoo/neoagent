@@ -454,6 +454,86 @@ storage.delete("user-42")
 
 Session 文件以 `{session_id}.json` 存储，包含消息历史、SessionState 和时间戳。
 
+### Per-turn Auto-Save（崩溃恢复）
+
+`session.bind_storage(storage)` 将 storage 绑定到 session 后，QueryLoop 每轮 turn 结束会自动调用 `session.save_if_storage()`——即使进程崩溃，也能从最后完成的 turn 恢复。
+
+`agent.chat()` 和 `agent.run()` 在传入非临时 session 时会自动调用 `session.bind_storage()`（前提是 agent 配置了 storage）。
+
+```python
+from pathlib import Path
+from neoagent.agent import NeoAgent
+from neoagent.config import NeoAgentConfig
+
+config = NeoAgentConfig(api_key="sk-ant-...", session_dir=Path("./sessions"))
+agent = NeoAgent(config)
+
+# 第一轮：创建 session 并开始对话（每轮自动保存）
+session = agent.new_session("task-001")
+await agent.chat("请分析这份代码并给出优化建议", session=session)
+
+# 如果进程崩溃，用同一 session_id 恢复——从最后完成的 turn 继续
+session = agent.resume("task-001")
+await agent.chat("继续上面的分析", session=session)
+```
+
+也可以手动绑定：
+
+```python
+from neoagent.session import Session, JsonFileStorage
+
+storage = JsonFileStorage(Path("./sessions"))
+session = Session.create("my-session")
+session.bind_storage(storage)        # 绑定后，每轮结束自动保存
+session.save_if_storage()            # 也可手动触发（无 storage 时静默无操作）
+```
+
+### Resume Validation（恢复校验）
+
+`agent.resume(session_id, validate=True)` 默认开启校验，检测两类潜在问题：
+
+| 场景 | 触发条件 | 警告原因字段 |
+|-----|---------|------------|
+| 工作目录消失 | `session.metadata["workspace_path"]` 路径不存在 | `"workspace_missing"` |
+| session 过期 | `updated_at` 距今超过 24 小时 | `"stale_session"` |
+
+校验结果通过 `SessionResumeWarningEvent` 发出，**不阻断** resume 流程。
+
+```python
+from neoagent.events import SessionResumeWarningEvent
+
+# 订阅警告事件
+def on_resume_warning(event: SessionResumeWarningEvent) -> None:
+    print(f"[警告] session={event.session_id}, 原因={event.reason}")
+    print(f"       详情: {event.details}")
+
+agent.event_bus.subscribe(SessionResumeWarningEvent, on_resume_warning)
+
+# validate=True 是默认值，validate=False 跳过校验
+session = agent.resume("task-001")               # 开启校验
+session = agent.resume("task-001", validate=False)  # 跳过校验
+```
+
+### Storage Cleanup（旧文件清理）
+
+`JsonFileStorage.cleanup()` 按时间和数量双重策略清理旧的 session 文件：
+
+```python
+from pathlib import Path
+from neoagent.session import JsonFileStorage
+
+storage = JsonFileStorage(Path("./sessions"))
+
+# 删除 30 天前的文件，且保留最新的 100 个（两个条件同时生效）
+removed_ids = storage.cleanup(max_age_days=30, max_sessions=100)
+print(f"已清理 {len(removed_ids)} 个 session：{removed_ids}")
+
+# 清理策略：
+# 1. 先按修改时间升序排列
+# 2. mtime 超过 max_age_days 天的直接删除
+# 3. 剩余文件超过 max_sessions 时，删除最旧的直到满足上限
+```
+
 ---
 
 ## 8. 上下文压缩
@@ -683,7 +763,214 @@ observer.close()
 
 ---
 
-## 12. MCP 集成
+## 12. 用量统计与评测
+
+### UsageTracker（Token 用量统计）
+
+`agent.enable_usage_tracking()` 返回一个 `UsageTracker`，通过订阅 `ProviderResponseEvent` 自动累计各模型的 token 消耗。
+
+```python
+import asyncio
+from neoagent.agent import NeoAgent
+from neoagent.config import NeoAgentConfig
+
+async def main():
+    config = NeoAgentConfig(api_key="sk-ant-...", auto_approve_tools=True)
+    agent = NeoAgent(config)
+
+    tracker = agent.enable_usage_tracking()
+
+    await agent.chat("用 Python 写一个快速排序")
+    await agent.chat("再写一个归并排序")
+
+    print(f"总输入 tokens：{tracker.total_input_tokens}")
+    print(f"总输出 tokens：{tracker.total_output_tokens}")
+
+    # 按模型查看明细
+    for model, usage in tracker.per_model_usage.items():
+        print(f"  {model}: input={usage.input_tokens}, output={usage.output_tokens}, 请求次数={usage.request_count}")
+
+    # 重置计数
+    tracker.reset()
+
+asyncio.run(main())
+```
+
+**`ModelUsage` 字段：**
+
+```python
+from neoagent.eval.usage import ModelUsage
+
+@dataclass
+class ModelUsage:
+    model: str           # 模型名称
+    input_tokens: int    # 累计输入 tokens
+    output_tokens: int   # 累计输出 tokens
+    request_count: int   # 累计请求次数
+```
+
+**`UsageTracker` 主要属性：**
+
+| 属性/方法 | 说明 |
+|---------|------|
+| `total_input_tokens` | 所有模型的输入 tokens 之和 |
+| `total_output_tokens` | 所有模型的输出 tokens 之和 |
+| `per_model_usage` | `dict[str, ModelUsage]`，按模型名分组 |
+| `reset()` | 清空所有统计数据 |
+
+---
+
+### MetricsCollector（结构化指标）
+
+`agent.enable_metrics()` 返回一个 `MetricsCollector`，订阅四类事件，按 turn 收集延迟、token 用量和工具调用信息。
+
+```python
+import asyncio
+from neoagent.agent import NeoAgent
+from neoagent.config import NeoAgentConfig
+
+async def main():
+    config = NeoAgentConfig(api_key="sk-ant-...", auto_approve_tools=True)
+    agent = NeoAgent(config)
+
+    collector = agent.enable_metrics()
+
+    await agent.chat("列出当前目录的文件")
+
+    # 获取 session 级别汇总
+    sm = collector.get_session_metrics()
+    print(f"总轮次：{len(sm.turns)}")
+    print(f"总输入 tokens：{sm.total_input_tokens}")
+    print(f"总输出 tokens：{sm.total_output_tokens}")
+    print(f"总耗时：{sm.duration_ms:.1f} ms")
+    print(f"总工具调用：{sm.tool_calls}")
+
+    # 获取每轮明细
+    for t in collector.get_turn_metrics():
+        print(f"  Turn {t.turn_index}: latency={t.latency_ms:.0f}ms, tools={t.tool_names}")
+
+asyncio.run(main())
+```
+
+**`TurnMetrics` 字段：**
+
+```python
+from neoagent.eval.metrics import TurnMetrics
+
+@dataclass
+class TurnMetrics:
+    turn_index: int          # 轮次编号（从 0 开始）
+    input_tokens: int        # 本轮输入 tokens
+    output_tokens: int       # 本轮输出 tokens
+    latency_ms: float        # 本轮 LLM 调用延迟（毫秒）
+    tool_call_count: int     # 本轮工具调用次数
+    tool_names: list[str]    # 本轮调用的工具名列表
+```
+
+**`SessionMetrics` 聚合属性：**
+
+| 属性 | 说明 |
+|-----|------|
+| `turns` | `list[TurnMetrics]`，所有轮次的明细 |
+| `total_input_tokens` | 所有轮次输入 tokens 之和 |
+| `total_output_tokens` | 所有轮次输出 tokens 之和 |
+| `duration_ms` | 所有轮次延迟之和（毫秒） |
+| `tool_calls` | 所有轮次工具调用次数之和 |
+
+---
+
+### EvalRunner（批量评测）
+
+`EvalRunner` 对一批 `EvalCase` 顺序执行，每个 case 有独立的 `MetricsCollector`，agent 异常和 assertion 异常都被捕获，不会中断后续 case。
+
+```python
+import asyncio
+from neoagent.agent import NeoAgent
+from neoagent.config import NeoAgentConfig
+from neoagent.core.types import Message, ConversationResult
+from neoagent.eval.runner import EvalCase, EvalRunner
+
+async def main():
+    config = NeoAgentConfig(api_key="sk-ant-...", auto_approve_tools=True)
+    agent = NeoAgent(config)
+
+    # 定义评测用例
+    cases = [
+        EvalCase(
+            name="基础问答",
+            messages=[Message(role="user", content="1+1 等于几？")],
+            assertion=lambda r: "2" in _last_text(r),
+            max_turns=3,
+        ),
+        EvalCase(
+            name="代码生成",
+            messages=[Message(role="user", content="用 Python 写 hello world")],
+            assertion=lambda r: "print" in _last_text(r),
+            max_turns=5,
+            metadata={"category": "coding"},
+        ),
+    ]
+
+    # 运行评测
+    runner = EvalRunner(agent)
+    report = await runner.run(cases)
+
+    print(f"总用例：{report.total}，通过：{report.passed}，失败：{report.failed}")
+    print(f"通过率：{report.pass_rate:.0%}")
+
+    for case_result in report.cases:
+        status = "PASS" if case_result.passed else "FAIL"
+        err = f" | 错误: {case_result.error}" if case_result.error else ""
+        sm = case_result.metrics
+        print(f"  [{status}] {case_result.name}{err} | tokens={sm.total_input_tokens}+{sm.total_output_tokens}")
+
+
+def _last_text(result: ConversationResult) -> str:
+    """提取最后一轮的文本内容。"""
+    if not result.turns:
+        return ""
+    last = result.turns[-1].response
+    if isinstance(last.content, list):
+        return " ".join(b.text for b in last.content if hasattr(b, "text"))
+    return last.content or ""
+
+
+asyncio.run(main())
+```
+
+**核心数据结构：**
+
+```python
+from neoagent.eval.runner import EvalCase, EvalCaseResult, EvalReport
+
+@dataclass
+class EvalCase:
+    name: str                                                        # 用例名称
+    messages: list[Message]                                          # 输入消息
+    assertion: Callable[[ConversationResult], bool | Awaitable[bool]]  # 断言函数（支持 async）
+    max_turns: int | None = None                                     # 最大轮次（None=继承 agent 配置）
+    metadata: dict[str, Any] = field(default_factory=dict)           # 自定义元数据
+
+@dataclass
+class EvalCaseResult:
+    name: str                        # 用例名称
+    passed: bool                     # 是否通过
+    result: ConversationResult | None  # 对话结果（agent 异常时为 None）
+    error: str | None                # 错误描述（agent 或 assertion 抛异常时记录）
+    metrics: SessionMetrics          # 本用例的独立指标
+
+@dataclass
+class EvalReport:
+    total: int                       # 总用例数
+    passed: int                      # 通过数
+    failed: int                      # 失败数
+    cases: list[EvalCaseResult]      # 各用例结果明细
+    pass_rate: float                 # 通过率（属性，passed / total）
+```
+
+---
+
+## 14. MCP 集成
 
 MCP（Model Context Protocol）让 agent 通过标准协议接入外部工具服务器。
 
@@ -747,7 +1034,7 @@ agent.list_mcp_servers()  # -> list[str]
 
 ---
 
-## 13. 多智能体
+## 15. 多智能体
 
 Orchestrator 协调多个独立 NeoAgent 实例（workers）完成复杂任务。
 
@@ -911,7 +1198,7 @@ asyncio.run(main())
 
 ---
 
-## 14. Channel 系统
+## 16. Channel 系统
 
 Channel 将 NeoAgent 暴露为外部可调用的服务端点。
 
@@ -1040,7 +1327,7 @@ async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 ---
 
-## 15. 配置参考
+## 17. 配置参考
 
 ### NeoAgentConfig 所有字段
 
@@ -1097,7 +1384,7 @@ config = NeoAgentConfig(
 
 ---
 
-## 16. 架构图
+## 18. 架构图
 
 ### 模块依赖关系
 
@@ -1174,4 +1461,4 @@ Channel (channels/base.py)
 
 ---
 
-*本文档基于 neoagent v3.2c 源码生成，所有 API 签名均来自实际代码。*
+*本文档基于 neoagent v3.2d 源码生成，所有 API 签名均来自实际代码。*

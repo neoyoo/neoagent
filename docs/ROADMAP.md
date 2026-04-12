@@ -80,7 +80,7 @@
 
 ---
 
-### v3.2c — 通道抽象（当前版本）
+### v3.2c — 通道抽象
 
 **状态**：已完成  
 **Tag**：`v3.2c`（commits `8ee94b7` + `adc52c9`）  
@@ -96,6 +96,26 @@
 - **SSE 流式支持**：`asyncio.Queue` 桥接 agent 事件流，`streaming=True/False` 开关
 - **可选依赖**：`pip install neoagent[fastapi]`，不安装 fastapi 时核心功能不受影响
 - **类型兼容**：PEP 563 + FastAPI 类型解析 workaround（`update_forward_refs`）
+
+---
+
+### v3.2d — Session Recovery + Evaluation & Observability（当前版本）
+
+**状态**：已完成  
+**Tag**：`v3.2d`  
+**测试**：818 tests
+
+核心功能：
+
+- **Session Recovery**：
+  - Per-turn auto-save：QueryLoop 每轮 turn 边界自动保存 session（崩溃后从最后完成的 turn 恢复）
+  - Resume validation：`resume(validate=True)` 检验 workspace 存在性 + 24h 活跃度，发出 `SessionResumeWarningEvent`
+  - Storage cleanup：`JsonFileStorage.cleanup(max_age_days, max_sessions)` 自动清理过期/超量 session 文件
+- **Evaluation & Observability**：
+  - `UsageTracker`：按模型分组统计 input/output token 用量
+  - `MetricsCollector`：per-turn 结构化指标（tokens、latency、tool count）
+  - `EvalRunner`：批量评测框架（EvalCase + assertion + 异常隔离 + EvalReport）
+- **11 个组件维度全部覆盖**，原始 master spec 终态目标达成
 
 ---
 
@@ -154,6 +174,7 @@
 | v3.2a | 已完成 | `v3.2a` / `ae74d0c` | 577 | 可扩展性（Hooks + MCP + 延迟加载） |
 | v3.2b | 已完成 | — | 732 | 多智能体（Orchestrator + WorkerPool） |
 | v3.2c | 已完成 | `v3.2c` / `adc52c9` | 760 | 通道抽象（FastAPI + SSE） |
+| v3.2d | 已完成 | `v3.2d` | 818 | Session Recovery + Evaluation & Observability |
 | v3.3 | 计划中 | — | — | 双通道（MQ 支持） |
 | v3.4 | 远期 | — | — | 安全与鉴权 |
 | v3.5 | 远期 | — | — | A2A 协议 |
