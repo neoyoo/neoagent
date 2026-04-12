@@ -105,6 +105,16 @@ class TurnCompleteEvent(Event):
     tool_call_count: int
 
 
+# ── Session events ────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class SessionResumeWarningEvent(Event):
+    """Emitted when resume(validate=True) detects a potential issue with the session."""
+    session_id: str
+    reason: str   # "workspace_missing" | "stale_session"
+    details: str
+
+
 # ── Multi-agent events ────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -143,6 +153,7 @@ _ALL_EVENT_TYPES = [
     CompressCheckEvent, CompressDoneEvent, CompressFallbackEvent,
     MemoryExtractEvent, SkillChangeEvent, TurnCompleteEvent,
     WorkerEvent, TaskDispatchEvent, TaskCompleteEvent,
+    SessionResumeWarningEvent,
 ]
 
 

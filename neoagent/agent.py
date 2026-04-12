@@ -1,9 +1,11 @@
 from __future__ import annotations
+import os
+from datetime import datetime, timedelta
 from neoagent.config import NeoAgentConfig
 from neoagent.core.loop import QueryLoop
 from neoagent.core.prompt import PromptBuilder, PromptSection
 from neoagent.core.types import ConversationResult, Message, TextBlock
-from neoagent.events import EventBus
+from neoagent.events import EventBus, SessionResumeWarningEvent
 from neoagent.hooks import HookManager, HookType, HookHandler
 from neoagent.providers.base import Provider
 from neoagent.session import JsonFileStorage, Session, SessionStorage
@@ -83,15 +85,44 @@ class NeoAgent:
         """Create a new empty session."""
         return Session.create(session_id)
 
-    def resume(self, session_id: str) -> Session:
+    def resume(self, session_id: str, validate: bool = True) -> Session:
         """Load an existing session from storage.
 
         Raises RuntimeError if no SessionStorage is configured.
         Raises KeyError if the session_id is not found.
+
+        If validate=True (default), runs sanity checks and emits
+        SessionResumeWarningEvent for any issues found (workspace missing,
+        stale session, etc.).
         """
         if self._storage is None:
             raise RuntimeError("No SessionStorage configured. Pass storage= to NeoAgent.")
-        return Session.resume(session_id, self._storage)
+        session = Session.resume(session_id, self._storage)
+        if validate:
+            self._validate_resume(session)
+        return session
+
+    def _validate_resume(self, session: Session) -> None:
+        """Run sanity checks on a resumed session; emit warnings via event bus."""
+        # Check workspace_path exists if recorded in metadata
+        workspace_path = session.metadata.get("workspace_path")
+        if workspace_path is not None and not os.path.exists(workspace_path):
+            self._event_bus.emit(SessionResumeWarningEvent(
+                session_id=session.id,
+                reason="workspace_missing",
+                details=f"workspace_path does not exist: {workspace_path}",
+            ))
+
+        # Check if session is stale (updated_at older than 24h)
+        now = datetime.now()
+        age = now - session.updated_at
+        if age > timedelta(hours=24):
+            hours_ago = age.total_seconds() / 3600
+            self._event_bus.emit(SessionResumeWarningEvent(
+                session_id=session.id,
+                reason="stale_session",
+                details=f"Session was last updated {hours_ago:.1f}h ago",
+            ))
 
     async def chat(self, message: str, session: Session | None = None) -> str:
         """Send a message and return the assistant's reply as a string.
@@ -106,6 +137,8 @@ class NeoAgent:
         if _temp:
             session = Session.create()
         session.messages.append(Message(role="user", content=message))
+        if not _temp and self._storage is not None:
+            session.bind_storage(self._storage)
         result = await self._loop.run(session=session)
         if not _temp and self._storage is not None:
             session.save(self._storage)
@@ -124,7 +157,8 @@ class NeoAgent:
         prevent silent state pollution — use session.messages directly, or pass
         a fresh session created with agent.new_session().
         """
-        if session is None:
+        _temp = session is None
+        if _temp:
             session = Session.create()
             session.messages = list(messages)
         elif session.messages:
@@ -134,7 +168,12 @@ class NeoAgent:
             )
         else:
             session.messages = list(messages)
-        return await self._loop.run(session=session, max_turns=max_turns)
+        if not _temp and self._storage is not None:
+            session.bind_storage(self._storage)
+        result = await self._loop.run(session=session, max_turns=max_turns)
+        if not _temp and self._storage is not None:
+            session.save(self._storage)
+        return result
 
     def enable_memory(
         self,

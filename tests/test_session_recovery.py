@@ -4,6 +4,7 @@ Session Recovery 相关测试。
 """
 from __future__ import annotations
 import pytest
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from pydantic import BaseModel
 from neoagent.session import Session, JsonFileStorage
@@ -142,3 +143,174 @@ class TestQueryLoopAutoSave:
         loop = QueryLoop(provider=provider, tool_registry=registry, prompt_builder=pb)
         result = await loop.run(session=session)
         assert result.reason == "completed"
+
+
+# ── Helpers shared by NeoAgent tests ─────────────────────────────────────────
+
+def _make_agent(tmp_path=None, storage=None):
+    """Create a NeoAgent with a mock provider."""
+    from neoagent.agent import NeoAgent
+    from neoagent.config import NeoAgentConfig
+
+    config = NeoAgentConfig(
+        provider="anthropic",
+        api_key="test-key",
+        model="claude-3-5-haiku-20241022",
+        session_dir=tmp_path,
+    )
+    agent = NeoAgent(config=config, storage=storage)
+    # Replace provider with mock
+    agent._provider = MagicMock()
+    agent._provider.get_context_window.return_value = 200_000
+    agent._provider.create = AsyncMock(return_value=_make_end_turn_response("ok"))
+    # Rebuild loop with mock provider
+    from neoagent.core.loop import QueryLoop
+    agent._loop = QueryLoop(
+        provider=agent._provider,
+        tool_registry=agent._registry,
+        tool_executor=agent._executor,
+        prompt_builder=agent._prompt_builder,
+        event_bus=agent._event_bus,
+        hook_manager=agent._hook_manager,
+        deferred_registry=agent._deferred_registry,
+    )
+    return agent
+
+
+class TestNeoAgentAutoSave:
+
+    @pytest.mark.asyncio
+    async def test_run_auto_saves_at_end(self, tmp_path):
+        """run() with a named session and storage saves a file after completion."""
+        agent = _make_agent(tmp_path=tmp_path)
+        session = Session.create(session_id="run-save-test")
+
+        await agent.run(
+            messages=[Message(role="user", content="hello")],
+            session=session,
+        )
+
+        assert (tmp_path / "run-save-test.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_chat_auto_saves_per_turn(self, tmp_path):
+        """chat() with a named session and storage persists the session."""
+        agent = _make_agent(tmp_path=tmp_path)
+        session = Session.create(session_id="chat-save-test")
+
+        await agent.chat("hello", session=session)
+
+        assert (tmp_path / "chat-save-test.json").exists()
+
+
+class TestResumeValidation:
+
+    def _make_saved_session(self, storage, session_id, workspace_path=None, updated_at=None):
+        """Helper: create and save a session with optional metadata/updated_at."""
+        session = Session.create(session_id=session_id)
+        if workspace_path is not None:
+            session.metadata["workspace_path"] = workspace_path
+        if updated_at is not None:
+            session.updated_at = updated_at
+        storage.save(session)
+        return session
+
+    def test_resume_validation_warns_on_missing_workspace(self, tmp_path):
+        """validate=True emits SessionResumeWarningEvent with reason=workspace_missing."""
+        from neoagent.events import SessionResumeWarningEvent
+
+        storage = JsonFileStorage(tmp_path)
+        self._make_saved_session(
+            storage,
+            session_id="missing-ws",
+            workspace_path="/nonexistent/path/that/does/not/exist",
+        )
+
+        agent = _make_agent(storage=storage)
+        warnings = []
+        agent.event_bus.subscribe(SessionResumeWarningEvent, warnings.append)
+
+        agent.resume("missing-ws", validate=True)
+
+        assert len(warnings) == 1
+        assert warnings[0].reason == "workspace_missing"
+        assert warnings[0].session_id == "missing-ws"
+        assert "/nonexistent/path/that/does/not/exist" in warnings[0].details
+
+    def test_resume_validation_warns_on_stale_session(self, tmp_path):
+        """validate=True emits SessionResumeWarningEvent with reason=stale_session."""
+        from neoagent.events import SessionResumeWarningEvent
+
+        storage = JsonFileStorage(tmp_path)
+        stale_time = datetime.now() - timedelta(hours=25)
+        self._make_saved_session(
+            storage,
+            session_id="stale-sess",
+            updated_at=stale_time,
+        )
+
+        agent = _make_agent(storage=storage)
+        warnings = []
+        agent.event_bus.subscribe(SessionResumeWarningEvent, warnings.append)
+
+        agent.resume("stale-sess", validate=True)
+
+        assert len(warnings) == 1
+        assert warnings[0].reason == "stale_session"
+        assert warnings[0].session_id == "stale-sess"
+        assert "h ago" in warnings[0].details
+
+    def test_resume_validation_passes_when_ok(self, tmp_path):
+        """validate=True emits no warning when session is fresh and workspace exists."""
+        from neoagent.events import SessionResumeWarningEvent
+
+        storage = JsonFileStorage(tmp_path)
+        self._make_saved_session(
+            storage,
+            session_id="ok-sess",
+            workspace_path=str(tmp_path),  # tmp_path exists
+        )
+
+        agent = _make_agent(storage=storage)
+        warnings = []
+        agent.event_bus.subscribe(SessionResumeWarningEvent, warnings.append)
+
+        agent.resume("ok-sess", validate=True)
+
+        assert warnings == []
+
+    def test_resume_validate_false_skips_check(self, tmp_path):
+        """validate=False skips all validation, even for stale/missing workspace."""
+        from neoagent.events import SessionResumeWarningEvent
+
+        storage = JsonFileStorage(tmp_path)
+        stale_time = datetime.now() - timedelta(hours=48)
+        self._make_saved_session(
+            storage,
+            session_id="skip-val",
+            workspace_path="/nonexistent/path",
+            updated_at=stale_time,
+        )
+
+        agent = _make_agent(storage=storage)
+        warnings = []
+        agent.event_bus.subscribe(SessionResumeWarningEvent, warnings.append)
+
+        agent.resume("skip-val", validate=False)
+
+        assert warnings == []
+
+    def test_resume_no_storage_raises(self):
+        """resume() raises RuntimeError when no storage is configured."""
+        from neoagent.agent import NeoAgent
+        from neoagent.config import NeoAgentConfig
+
+        config = NeoAgentConfig(
+            provider="anthropic",
+            api_key="test-key",
+            model="claude-3-5-haiku-20241022",
+        )
+        agent = NeoAgent(config=config)
+
+        with pytest.raises(RuntimeError, match="No SessionStorage configured"):
+            agent.resume("any-id")
