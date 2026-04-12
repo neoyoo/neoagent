@@ -54,6 +54,7 @@ class QueryLoop:
         messages: "list[Message] | Session | None" = None,
         *,
         session: "Session | None" = None,
+        max_turns: int | None = None,
     ) -> ConversationResult:
         """Run the query loop.
 
@@ -92,7 +93,8 @@ class QueryLoop:
                 _ts._session_state = session_state
 
         turns: list[Turn] = []
-        for turn_idx in range(self.max_turns):
+        effective_max_turns = max_turns if max_turns is not None else self.max_turns
+        for turn_idx in range(effective_max_turns):
             schemas = self._registry.get_schemas()
             should_compress = self._compressor.should_compress(msgs, schemas, self.context_budget)
             msg_tokens = self._compressor.estimate_tokens(msgs)

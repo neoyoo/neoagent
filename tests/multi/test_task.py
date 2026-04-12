@@ -499,3 +499,47 @@ class TestRunWorkerSession:
         assert result.status == "completed"
         assert result.work_summary is not None
         assert "Analysis complete." in result.work_summary
+
+    @pytest.mark.asyncio
+    async def test_max_turns_limits_worker_execution(self) -> None:
+        """Task.max_turns must actually cap the worker's turn count."""
+        from unittest.mock import MagicMock, patch
+        from neoagent.config import NeoAgentConfig
+        from neoagent.agent import NeoAgent
+        from neoagent.multi.task import Task, TaskTracker, _run_worker
+        from neoagent.core.types import ToolUseBlock
+        from neoagent.providers.base import Response
+
+        call_count = 0
+        tool_block = ToolUseBlock(id="t1", name="bash", input={"cmd": "ls"})
+
+        async def fake_complete(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            # Always return tool_use to force the loop to keep going
+            return Response(
+                content=[tool_block],
+                stop_reason="tool_use",
+                input_tokens=5,
+                output_tokens=3,
+            )
+
+        # config.max_turns = 50, but task.max_turns = 2
+        config = NeoAgentConfig(api_key="test", model="claude-haiku-4-5", max_turns=50)
+        with patch("neoagent.agent._create_provider") as mock_prov:
+            provider_mock = MagicMock()
+            provider_mock.create = fake_complete
+            provider_mock.get_context_window.return_value = 100_000
+            mock_prov.return_value = provider_mock
+            agent = NeoAgent(config)
+
+        # Task with max_turns=2 — should stop after 2 LLM calls, NOT 50
+        task = Task.create(instruction="keep working", max_turns=2)
+        tracker = TaskTracker()
+        tracker.track(task)
+
+        result = await _run_worker(agent, task, tracker)
+
+        # Loop should have stopped after task.max_turns calls
+        assert call_count <= 2, f"Expected ≤ 2 LLM calls, got {call_count}"
+        assert result.status == "completed"

@@ -236,7 +236,7 @@ class TestRunSessionGuard:
 
         captured_sessions: list = []
 
-        async def capture_run(session):
+        async def capture_run(session, **kwargs):
             captured_sessions.append(session)
             turn = Turn(
                 response=Message(role="assistant", content="ok"),

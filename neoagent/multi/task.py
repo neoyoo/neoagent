@@ -326,7 +326,7 @@ async def _run_worker(
 
     try:
         async with asyncio.timeout(task.timeout):
-            result = await agent.run(messages=messages, session=_session)
+            result = await agent.run(messages=messages, session=_session, max_turns=task.max_turns)
 
         # Extract output from last assistant turn
         output = ""
