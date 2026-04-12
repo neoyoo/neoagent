@@ -105,6 +105,36 @@ class TurnCompleteEvent(Event):
     tool_call_count: int
 
 
+# ── Multi-agent events ────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class WorkerEvent(Event):
+    """Wraps an event emitted by a worker agent, bubbled up to the orchestrator."""
+    worker_name: str
+    task_id: str
+    depth: int
+    inner: Event
+
+
+@dataclass(frozen=True)
+class TaskDispatchEvent(Event):
+    """Emitted when a task is dispatched to a worker."""
+    task_id: str
+    worker_name: str
+    instruction: str
+    depth: int
+
+
+@dataclass(frozen=True)
+class TaskCompleteEvent(Event):
+    """Emitted when a worker completes (or fails) a task."""
+    task_id: str
+    worker_name: str
+    status: str
+    turns_completed: int
+    usage: "TokenUsage | None"
+
+
 # ── EventBus ──────────────────────────────────────────────────────────────────
 
 _ALL_EVENT_TYPES = [
@@ -112,6 +142,7 @@ _ALL_EVENT_TYPES = [
     ToolCallEvent, ToolResultEvent,
     CompressCheckEvent, CompressDoneEvent, CompressFallbackEvent,
     MemoryExtractEvent, SkillChangeEvent, TurnCompleteEvent,
+    WorkerEvent, TaskDispatchEvent, TaskCompleteEvent,
 ]
 
 
