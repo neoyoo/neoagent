@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING, AsyncGenerator
+from typing import TYPE_CHECKING, AsyncGenerator, Callable
 
 from neoagent.channels.base import Channel
 from neoagent.core.types import ConversationResult, Message, TextBlock
@@ -145,23 +145,28 @@ class FastAPIChannel(Channel):
     Usage::
 
         agent = NeoAgent(config)
-        channel = FastAPIChannel(agent, host="0.0.0.0", port=8000)
+        channel = FastAPIChannel(agent, host="127.0.0.1", port=8000)
         await channel.serve_forever()
     """
 
     def __init__(
         self,
         agent: "NeoAgent",
-        host: str = "0.0.0.0",
+        host: str = "127.0.0.1",
         port: int = 8000,
         streaming: bool = True,
+        api_key: str | None = None,
+        cors_origins: list[str] | None = None,
     ) -> None:
         super().__init__(agent)
         self._host = host
         self._port = port
         self._streaming = streaming
+        self._api_key = api_key
+        self._cors_origins = cors_origins
         self._server: object | None = None
         self._app: object | None = None
+        self._run_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # Channel lifecycle
@@ -207,6 +212,42 @@ class FastAPIChannel(Channel):
 
         app = FastAPI(title="neoagent", version="1.0")
 
+        # CORS middleware
+        if self._cors_origins is not None:
+            from starlette.middleware.cors import CORSMiddleware
+            app.add_middleware(
+                CORSMiddleware,
+                allow_origins=self._cors_origins,
+                allow_methods=["GET", "POST"],
+                allow_headers=["Authorization", "Content-Type"],
+                allow_credentials=False,
+            )
+
+        # API key authentication dependency
+        if self._api_key is not None:
+            expected_key = self._api_key
+
+            async def _verify_api_key(request):
+                """Check Authorization: Bearer <key> header."""
+                from starlette.responses import JSONResponse
+                auth = request.headers.get("Authorization", "")
+                if not auth.startswith("Bearer ") or auth[7:] != expected_key:
+                    return JSONResponse(
+                        status_code=401,
+                        content={"detail": "Invalid or missing API key"},
+                    )
+                return None
+
+            @app.middleware("http")
+            async def auth_middleware(request, call_next):
+                # Skip auth for health endpoint
+                if request.url.path == "/v1/health":
+                    return await call_next(request)
+                error_response = await _verify_api_key(request)
+                if error_response is not None:
+                    return error_response
+                return await call_next(request)
+
         @app.get("/v1/health")
         async def health():
             return {"status": "ok"}
@@ -217,7 +258,8 @@ class FastAPIChannel(Channel):
         # namespace. We use `__annotations__` injection to force the real type.
         async def run(req):
             msgs = [Message(role=m.role, content=m.content) for m in req.messages]
-            result = await self._agent.run(messages=msgs, max_turns=req.max_turns)
+            async with self._run_lock:
+                result = await self._agent.run(messages=msgs, max_turns=req.max_turns)
             return RunResponse.from_result(result)
 
         run.__annotations__ = {"req": RunRequest, "return": RunResponse}
@@ -278,7 +320,8 @@ class FastAPIChannel(Channel):
             self._agent.event_bus.subscribe(event_type, h)
 
         async def _run() -> ConversationResult:
-            return await self._agent.run(messages=messages, max_turns=max_turns)
+            async with self._run_lock:
+                return await self._agent.run(messages=messages, max_turns=max_turns)
 
         agent_task = asyncio.create_task(_run())
 

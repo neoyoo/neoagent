@@ -292,3 +292,117 @@ async def test_stream_emits_error_on_agent_exception():
     last = json.loads(data_lines[-1][6:])
     assert last["type"] == "error"
     assert "boom" in last["message"]
+
+
+# ── S2: Security defaults ────────────────────────────────────────────────────
+
+def test_default_host_is_localhost():
+    """Default host must be 127.0.0.1, not 0.0.0.0."""
+    agent = _make_agent()
+    channel = FastAPIChannel(agent)
+    assert channel._host == "127.0.0.1"
+
+
+@pytest.mark.asyncio
+async def test_api_key_rejects_unauthenticated():
+    """When api_key is set, requests without auth header get 401."""
+    agent = _make_agent()
+    channel = FastAPIChannel(agent, api_key="test-secret-key")
+    async with _async_client(channel) as client:
+        resp = await client.post("/v1/run", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_api_key_accepts_valid_bearer():
+    """When api_key is set, requests with correct Bearer token succeed."""
+    agent = _make_agent()
+    channel = FastAPIChannel(agent, api_key="test-secret-key")
+    async with _async_client(channel) as client:
+        resp = await client.post(
+            "/v1/run",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers={"Authorization": "Bearer test-secret-key"},
+        )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_api_key_rejects_wrong_bearer():
+    """Wrong API key gets 401."""
+    agent = _make_agent()
+    channel = FastAPIChannel(agent, api_key="test-secret-key")
+    async with _async_client(channel) as client:
+        resp = await client.post(
+            "/v1/run",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers={"Authorization": "Bearer wrong-key"},
+        )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_health_bypasses_api_key():
+    """Health endpoint must work without API key even when auth is enabled."""
+    agent = _make_agent()
+    channel = FastAPIChannel(agent, api_key="test-secret-key")
+    async with _async_client(channel) as client:
+        resp = await client.get("/v1/health")
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_no_api_key_allows_all():
+    """When api_key is None (default), all requests pass."""
+    agent = _make_agent()
+    channel = FastAPIChannel(agent)  # no api_key
+    async with _async_client(channel) as client:
+        resp = await client.post("/v1/run", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert resp.status_code == 200
+
+
+# ── S3: Run serialization ────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_lock_exists():
+    """FastAPIChannel must have an asyncio.Lock for run serialization."""
+    agent = _make_agent()
+    channel = FastAPIChannel(agent)
+    assert hasattr(channel, '_run_lock')
+    assert isinstance(channel._run_lock, asyncio.Lock)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_runs_are_serialized():
+    """Two concurrent /v1/run requests must not overlap execution."""
+    import asyncio as _asyncio
+
+    execution_log = []
+
+    async def slow_run(messages, max_turns=None, session=None):
+        execution_log.append("start")
+        await _asyncio.sleep(0.05)
+        execution_log.append("end")
+        return ConversationResult(
+            turns=[Turn(
+                response=Message(role="assistant", content=[TextBlock(text="ok")]),
+                tool_calls=[], tool_results=[], stop_reason="end_turn",
+            )],
+            reason="completed",
+        )
+
+    agent = _make_agent()
+    agent.run = AsyncMock(side_effect=slow_run)
+    channel = FastAPIChannel(agent)
+
+    async with _async_client(channel) as client:
+        tasks = [
+            client.post("/v1/run", json={"messages": [{"role": "user", "content": "a"}]}),
+            client.post("/v1/run", json={"messages": [{"role": "user", "content": "b"}]}),
+        ]
+        results = await _asyncio.gather(*tasks)
+
+    # Both must succeed
+    assert all(r.status_code == 200 for r in results)
+    # Execution must be serialized: start, end, start, end (not start, start, end, end)
+    assert execution_log == ["start", "end", "start", "end"]
