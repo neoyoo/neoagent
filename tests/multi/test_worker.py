@@ -180,7 +180,7 @@ def _make_orchestrator(model: str = "claude-opus-4", max_depth: int = 2, tool_po
 
     config = NeoAgentConfig(api_key="test-key", model=model)
     orch = MagicMock()
-    orch._config = config
+    orch.config = config
     orch._tool_pool = tool_pool if tool_pool is not None else {}
     orch.max_depth = max_depth
     # Provide a real EventBus so _setup_event_bubble can call subscribe_all
@@ -312,6 +312,32 @@ class TestCreateWorkerAgent:
         schemas = result._registry.get_schemas()
         schema_names = {s["name"] for s in schemas}
         assert "spawn_worker" not in schema_names
+
+    def test_create_worker_agent_uses_real_orchestrator_config(self) -> None:
+        """_create_worker_agent must read orchestrator.config, not orchestrator._config."""
+        from unittest.mock import patch, MagicMock
+        from neoagent.config import NeoAgentConfig
+        from neoagent.multi.orchestrator import Orchestrator
+
+        config = NeoAgentConfig(api_key="test-key", model="claude-haiku-4-5")
+        with patch("neoagent.agent._create_provider") as mock_prov:
+            mock_prov.return_value = MagicMock()
+            orch = Orchestrator(config)
+
+        card = WorkerCard(
+            name="w",
+            description="",
+            instruction="You help.",
+            tags=(),
+            model=None,
+            tools=(),
+        )
+        with patch("neoagent.agent._create_provider") as mock_prov:
+            mock_prov.return_value = MagicMock()
+            with patch("neoagent.multi.events._setup_event_bubble"):
+                # Should NOT raise AttributeError
+                agent = _create_worker_agent(card, orch, depth=0)
+        assert agent is not None
 
     def test_event_bubble_called(self) -> None:
         orch = _make_orchestrator(max_depth=0)

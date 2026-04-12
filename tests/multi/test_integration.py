@@ -334,7 +334,7 @@ class TestDepthControl:
 
         orch = MagicMock()
         orch.max_depth = 2
-        orch._config = NeoAgentConfig(api_key="sk-test")
+        orch.config = NeoAgentConfig(api_key="sk-test")
         orch._tool_pool = {}
         orch._event_bus = EventBus()
 
@@ -353,7 +353,7 @@ class TestDepthControl:
 
         orch = MagicMock()
         orch.max_depth = 2
-        orch._config = NeoAgentConfig(api_key="sk-test")
+        orch.config = NeoAgentConfig(api_key="sk-test")
         orch._tool_pool = {}
         orch._event_bus = EventBus()
 
@@ -493,7 +493,7 @@ class TestEventBubbling:
         card = _make_worker_card("labelled-worker")
         orch = MagicMock()
         orch.max_depth = 0
-        orch._config = NeoAgentConfig(api_key="sk-test")
+        orch.config = NeoAgentConfig(api_key="sk-test")
         orch._tool_pool = {}
         orch._event_bus = EventBus()
 

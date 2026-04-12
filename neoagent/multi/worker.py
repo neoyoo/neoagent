@@ -92,7 +92,7 @@ def _create_worker_agent(
     from neoagent.multi.events import _setup_event_bubble
     from neoagent.multi.tools.spawn_worker import SpawnWorkerTool
 
-    orch_config = orchestrator._config  # type: ignore[attr-defined]
+    orch_config = orchestrator.config  # type: ignore[attr-defined]
     tool_pool: dict[str, object] = orchestrator._tool_pool  # type: ignore[attr-defined]
 
     worker_model = card.model if card.model is not None else orch_config.model
