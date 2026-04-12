@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import uuid
 
 import pytest
 
-from neoagent.multi.task import Task, TaskResult, TokenUsage
+from neoagent.core.types import Message, TextBlock, ToolUseBlock
+from neoagent.multi.task import Task, TaskResult, TaskTracker, TokenUsage, _extract_work_summary
 
 
 class TestTokenUsage:
@@ -208,3 +210,201 @@ class TestTaskResult:
             turns_completed=0,
         )
         assert result.is_success is False
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_result(task_id: str, status: str = "completed") -> TaskResult:
+    return TaskResult(
+        task_id=task_id,
+        status=status,  # type: ignore[arg-type]
+        output="done" if status == "completed" else None,
+        error=None,
+        usage=TokenUsage(input_tokens=10, output_tokens=5),
+        work_summary="summary",
+        turns_completed=1,
+    )
+
+
+def _make_task(instruction: str = "do work") -> Task:
+    return Task.create(instruction=instruction)
+
+
+def _make_assistant_message(text: str | None = None, tools: list[dict] | None = None) -> Message:
+    content: list = []
+    if tools:
+        for t in tools:
+            content.append(ToolUseBlock(id=t["id"], name=t["name"], input=t.get("input", {})))
+    if text:
+        content.append(TextBlock(text=text))
+    return Message(role="assistant", content=content)
+
+
+# ---------------------------------------------------------------------------
+# TaskTracker tests
+# ---------------------------------------------------------------------------
+
+class TestTaskTracker:
+    def test_track_and_get(self) -> None:
+        tracker = TaskTracker()
+        task = _make_task()
+        tracker.track(task)
+        retrieved = tracker.get_task(task.task_id)
+        assert retrieved is task
+
+    def test_get_unknown_task_returns_none(self) -> None:
+        tracker = TaskTracker()
+        assert tracker.get_task("nonexistent") is None
+
+    def test_complete_stores_result(self) -> None:
+        tracker = TaskTracker()
+        task = _make_task()
+        tracker.track(task)
+        result = _make_result(task.task_id)
+        tracker.complete(task.task_id, result)
+        assert tracker.get_result(task.task_id) is result
+
+    def test_get_result_before_complete_returns_none(self) -> None:
+        tracker = TaskTracker()
+        task = _make_task()
+        tracker.track(task)
+        assert tracker.get_result(task.task_id) is None
+
+    def test_get_result_unknown_returns_none(self) -> None:
+        tracker = TaskTracker()
+        assert tracker.get_result("unknown-id") is None
+
+    def test_list_active_before_complete(self) -> None:
+        tracker = TaskTracker()
+        task = _make_task()
+        tracker.track(task)
+        active = tracker.list_active()
+        assert task.task_id in active
+
+    def test_list_active_after_complete(self) -> None:
+        tracker = TaskTracker()
+        task = _make_task()
+        tracker.track(task)
+        tracker.complete(task.task_id, _make_result(task.task_id))
+        active = tracker.list_active()
+        assert task.task_id not in active
+
+    def test_list_all_includes_status(self) -> None:
+        tracker = TaskTracker()
+        task = _make_task("long instruction text here")
+        tracker.track(task)
+        summaries = tracker.list_all()
+        assert len(summaries) == 1
+        entry = summaries[0]
+        assert entry["task_id"] == task.task_id
+        assert entry["status"] == "active"
+        assert "instruction" in entry
+
+    def test_list_all_status_changes_after_complete(self) -> None:
+        tracker = TaskTracker()
+        task = _make_task()
+        tracker.track(task)
+        tracker.complete(task.task_id, _make_result(task.task_id))
+        summaries = tracker.list_all()
+        entry = next(e for e in summaries if e["task_id"] == task.task_id)
+        assert entry["status"] == "completed"
+
+    def test_list_all_instruction_truncated(self) -> None:
+        long_instr = "x" * 200
+        tracker = TaskTracker()
+        task = _make_task(long_instr)
+        tracker.track(task)
+        entry = tracker.list_all()[0]
+        assert len(entry["instruction"]) < 200
+
+    async def test_cancel_active_task(self) -> None:
+        tracker = TaskTracker()
+        task = _make_task()
+        tracker.track(task)
+
+        # Create a real asyncio task that we can cancel
+        async def _noop() -> None:
+            await asyncio.sleep(100)
+
+        asyncio_task = asyncio.create_task(_noop())
+        tracker.set_asyncio_task(task.task_id, asyncio_task)
+
+        result = tracker.cancel(task.task_id)
+        assert result is True
+        assert asyncio_task.cancelled() or asyncio_task.cancelling() > 0
+
+    def test_cancel_unknown_task_returns_false(self) -> None:
+        tracker = TaskTracker()
+        assert tracker.cancel("no-such-id") is False
+
+    def test_cancel_completed_task_returns_false(self) -> None:
+        tracker = TaskTracker()
+        task = _make_task()
+        tracker.track(task)
+        tracker.complete(task.task_id, _make_result(task.task_id))
+        assert tracker.cancel(task.task_id) is False
+
+    def test_multiple_tasks_tracked(self) -> None:
+        tracker = TaskTracker()
+        t1 = _make_task("task one")
+        t2 = _make_task("task two")
+        tracker.track(t1)
+        tracker.track(t2)
+        assert len(tracker.list_active()) == 2
+        tracker.complete(t1.task_id, _make_result(t1.task_id))
+        active = tracker.list_active()
+        assert t1.task_id not in active
+        assert t2.task_id in active
+
+
+# ---------------------------------------------------------------------------
+# _extract_work_summary tests
+# ---------------------------------------------------------------------------
+
+class TestExtractWorkSummary:
+    def test_empty_messages_returns_fallback(self) -> None:
+        result = _extract_work_summary([])
+        assert result == "（无有效工作摘要）"
+
+    def test_no_assistant_messages_returns_fallback(self) -> None:
+        messages = [Message(role="user", content="hello")]
+        result = _extract_work_summary(messages)
+        assert result == "（无有效工作摘要）"
+
+    def test_with_tool_calls_includes_tool_name(self) -> None:
+        msg = _make_assistant_message(tools=[{"id": "t1", "name": "bash", "input": {}}])
+        result = _extract_work_summary([msg])
+        assert "bash" in result
+
+    def test_last_assistant_text_included(self) -> None:
+        msg = _make_assistant_message(text="Final answer here")
+        result = _extract_work_summary([msg])
+        assert "Final answer here" in result
+
+    def test_truncates_to_last_5_tool_calls(self) -> None:
+        tools = [{"id": f"t{i}", "name": f"tool_{i}", "input": {}} for i in range(8)]
+        msg = _make_assistant_message(tools=tools)
+        result = _extract_work_summary([msg])
+        # Only last 5 should appear
+        for i in range(3, 8):
+            assert f"tool_{i}" in result
+        # First 3 should not
+        for i in range(3):
+            assert f"tool_{i}" not in result
+
+    def test_string_content_message_ignored(self) -> None:
+        # Messages with string content (not list) should not crash
+        msg = Message(role="assistant", content="plain string output")
+        result = _extract_work_summary([msg])
+        # Should include the text content
+        assert result != "（无有效工作摘要）"
+
+    def test_mixed_messages(self) -> None:
+        user_msg = Message(role="user", content="do something")
+        tool_msg = _make_assistant_message(tools=[{"id": "t1", "name": "read_file", "input": {}}])
+        text_msg = _make_assistant_message(text="Task completed successfully")
+        result = _extract_work_summary([user_msg, tool_msg, text_msg])
+        assert "read_file" in result
+        assert "Task completed successfully" in result
