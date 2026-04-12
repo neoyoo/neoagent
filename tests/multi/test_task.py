@@ -433,7 +433,8 @@ class TestRunWorkerSession:
         first_response = Response(
             content=[tool_use_block],
             stop_reason="tool_use",
-            usage={"input_tokens": 10, "output_tokens": 5},
+            input_tokens=10,
+            output_tokens=5,
         )
 
         async def fake_complete(*args, **kwargs):
@@ -477,7 +478,8 @@ class TestRunWorkerSession:
             return Response(
                 content=[TextBlock(text="Analysis complete.")],
                 stop_reason="end_turn",
-                usage={"input_tokens": 10, "output_tokens": 8},
+                input_tokens=10,
+                output_tokens=8,
             )
 
         config = NeoAgentConfig(api_key="test", model="claude-haiku-4-5")
