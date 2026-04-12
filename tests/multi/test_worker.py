@@ -400,7 +400,7 @@ class TestCreateWorkerAgent:
 
         with patch("neoagent.agent._create_provider") as mock_prov:
             mock_prov.return_value = MagicMock()
-            with patch("neoagent.multi.worker._setup_event_bubble"):
+            with patch("neoagent.multi.events._setup_event_bubble"):
                 agent = _create_worker_agent(card, orch, depth=0)
 
         registered_tool = agent._registry.get_tool("stateful_test_tool")
