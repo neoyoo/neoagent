@@ -9,13 +9,12 @@ from pydantic import BaseModel, Field
 
 from neoagent.core.types import ToolResult
 from neoagent.multi.parser import parse_worker_md
-from neoagent.multi.task import Task, _run_worker
+from neoagent.multi.task import Task, TaskResult, _run_worker
 from neoagent.multi.worker import _create_worker_agent
 from neoagent.tools.base import BaseTool
 
 if TYPE_CHECKING:
     from neoagent.multi.orchestrator import Orchestrator
-    from neoagent.multi.task import TaskResult
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +101,18 @@ class SpawnWorkerTool(BaseTool):
 
         asyncio_task = asyncio.create_task(_run_with_semaphore())
         self._orchestrator._task_tracker.set_asyncio_task(task_id, asyncio_task)
-        result = await asyncio_task
+        try:
+            result = await asyncio_task
+        except asyncio.CancelledError:
+            result = TaskResult(
+                task_id=task_id,
+                status="cancelled",
+                output="",
+                error=None,
+                usage=None,
+                work_summary="（任务被外部取消）",
+                turns_completed=0,
+            )
 
         # 6. Record completion and emit complete event
         self._orchestrator._task_tracker.complete(task_id, result)

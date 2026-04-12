@@ -501,6 +501,86 @@ class TestRunWorkerSession:
         assert "Analysis complete." in result.work_summary
 
     @pytest.mark.asyncio
+    async def test_success_token_usage_from_session_state(self) -> None:
+        """Successful task must report real token usage from session state."""
+        from unittest.mock import MagicMock, patch
+        from neoagent.config import NeoAgentConfig
+        from neoagent.agent import NeoAgent
+        from neoagent.multi.task import Task, TaskTracker, _run_worker
+        from neoagent.providers.base import Response
+
+        async def fake_complete(*args, **kwargs):
+            return Response(
+                content=[TextBlock(text="Done.")],
+                stop_reason="end_turn",
+                input_tokens=123,
+                output_tokens=45,
+            )
+
+        config = NeoAgentConfig(api_key="test", model="claude-haiku-4-5")
+        with patch("neoagent.agent._create_provider") as mock_prov:
+            provider_mock = MagicMock()
+            provider_mock.create = fake_complete
+            provider_mock.get_context_window.return_value = 100_000
+            mock_prov.return_value = provider_mock
+            agent = NeoAgent(config)
+
+        task = Task.create(instruction="do something")
+        tracker = TaskTracker()
+        tracker.track(task)
+
+        result = await _run_worker(agent, task, tracker)
+
+        assert result.status == "completed"
+        assert result.usage is not None
+        assert result.usage.input_tokens > 0, f"Expected >0 input tokens, got {result.usage.input_tokens}"
+        assert result.usage.output_tokens > 0, f"Expected >0 output tokens, got {result.usage.output_tokens}"
+
+    @pytest.mark.asyncio
+    async def test_cancel_turns_completed_reflects_real_turns(self) -> None:
+        """Cancelled task must report actual turns completed, not hardcoded 0."""
+        import asyncio
+        from unittest.mock import MagicMock, patch
+        from neoagent.config import NeoAgentConfig
+        from neoagent.agent import NeoAgent
+        from neoagent.multi.task import Task, TaskTracker, _run_worker
+        from neoagent.providers.base import Response
+
+        call_count = 0
+        tool_block = ToolUseBlock(id="t1", name="read_file", input={"path": "/x"})
+
+        async def fake_complete(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return Response(
+                    content=[tool_block],
+                    stop_reason="tool_use",
+                    input_tokens=10,
+                    output_tokens=5,
+                )
+            raise asyncio.CancelledError()
+
+        config = NeoAgentConfig(api_key="test", model="claude-haiku-4-5")
+        with patch("neoagent.agent._create_provider") as mock_prov:
+            provider_mock = MagicMock()
+            provider_mock.create = fake_complete
+            provider_mock.get_context_window.return_value = 100_000
+            mock_prov.return_value = provider_mock
+            agent = NeoAgent(config)
+
+        task = Task.create(instruction="work then cancel")
+        tracker = TaskTracker()
+        tracker.track(task)
+
+        result = await _run_worker(agent, task, tracker)
+
+        assert result.status == "cancelled"
+        assert result.turns_completed >= 1, (
+            f"Expected ≥1 turns_completed (worker ran before cancel), got {result.turns_completed}"
+        )
+
+    @pytest.mark.asyncio
     async def test_max_turns_limits_worker_execution(self) -> None:
         """Task.max_turns must actually cap the worker's turn count."""
         from unittest.mock import MagicMock, patch

@@ -344,9 +344,11 @@ async def _run_worker(
         if len(output) > max_chars:
             output = output[:max_chars] + "\n[truncated]"
 
-        # Accumulate usage — agent doesn't expose per-turn token counts
-        # directly on response; default to zeros
-        usage = TokenUsage(input_tokens=0, output_tokens=0)
+        # Accumulate usage from session state (accumulated by the loop)
+        usage = TokenUsage(
+            input_tokens=_session.state.total_input_tokens,
+            output_tokens=_session.state.total_output_tokens,
+        )
         work_summary = _extract_work_summary(_session.messages)
 
         return TaskResult(
@@ -362,6 +364,7 @@ async def _run_worker(
     except asyncio.CancelledError:
         logger.debug("_run_worker: task %r cancelled", task.task_id)
         summary = _extract_work_summary(_session.messages) or "（任务被取消）"
+        turns_completed = sum(1 for msg in _session.messages if msg.role == "assistant")
         return TaskResult(
             task_id=task.task_id,
             status="cancelled",
@@ -369,11 +372,12 @@ async def _run_worker(
             error=None,
             usage=None,
             work_summary=summary,
-            turns_completed=0,
+            turns_completed=turns_completed,
         )
     except TimeoutError:
         logger.debug("_run_worker: task %r timed out", task.task_id)
-        summary = _extract_work_summary(_session.messages) or "（任务被取消）"
+        summary = _extract_work_summary(_session.messages) or "（任务超时）"
+        turns_completed = sum(1 for msg in _session.messages if msg.role == "assistant")
         return TaskResult(
             task_id=task.task_id,
             status="cancelled",
@@ -381,7 +385,7 @@ async def _run_worker(
             output="",
             usage=None,
             work_summary=summary,
-            turns_completed=0,
+            turns_completed=turns_completed,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("_run_worker: task %r failed: %s", task.task_id, exc)

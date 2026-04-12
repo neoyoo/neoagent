@@ -699,6 +699,49 @@ class TestRealWorkerFactory:
 
     @pytest.mark.asyncio
     @patch("neoagent.agent._create_provider")
+    async def test_cancel_does_not_leak_cancelled_error(self, mock_prov: MagicMock) -> None:
+        """Cancelling a task must not raise CancelledError from tool.execute()."""
+        mock_prov.return_value = _mock_provider()
+
+        config = NeoAgentConfig(api_key="test", model="claude-haiku-4-5")
+        orch = Orchestrator(config)
+
+        card = WorkerCard(
+            name="helper",
+            description="A helper",
+            instruction="You are a helper.",
+            tags=(),
+            model=None,
+            tools=(),
+        )
+        orch.register_worker(card)
+
+        from neoagent.multi.tools.delegate_task import DelegateTaskInput
+
+        # Start the task and immediately cancel via tracker
+        tool = orch._brain._registry.get_tool("delegate_task")
+
+        exec_task = asyncio.create_task(
+            tool.execute(DelegateTaskInput(worker_name="helper", instruction="work"))
+        )
+        await asyncio.sleep(0)  # let it start
+        # Cancel all active tasks
+        for tid in orch._task_tracker.list_active():
+            orch._task_tracker.cancel(tid)
+
+        # execute() must NOT raise CancelledError — it should return a ToolResult
+        try:
+            result = await asyncio.wait_for(exec_task, timeout=2.0)
+            # If we get here, it returned normally — check it's not an uncaught error
+            # (it might be a cancelled result or a completed result)
+        except asyncio.CancelledError:
+            pytest.fail("tool.execute() must not raise CancelledError — it must return a ToolResult")
+        except asyncio.TimeoutError:
+            exec_task.cancel()
+            # Timeout is ok for this test — the key is no CancelledError
+
+    @pytest.mark.asyncio
+    @patch("neoagent.agent._create_provider")
     async def test_spawn_worker_real_worker_factory(self, mock_prov: MagicMock) -> None:
         """spawn_worker with real _create_worker_agent must not raise AttributeError."""
         mock_prov.return_value = _mock_full_provider()
