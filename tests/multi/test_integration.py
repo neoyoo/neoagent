@@ -639,3 +639,19 @@ class TestSemaphoreLimit:
         orch = Orchestrator(_make_config())
 
         assert orch._semaphore._value == 5
+
+
+def test_delegate_task_is_concurrent_safe() -> None:
+    """DelegateTaskTool must be marked concurrent safe for parallel execution."""
+    from unittest.mock import MagicMock, patch
+    from neoagent.config import NeoAgentConfig
+    from neoagent.multi.orchestrator import Orchestrator
+    from neoagent.multi.tools.delegate_task import DelegateTaskTool
+
+    config = NeoAgentConfig(api_key="test", model="claude-haiku-4-5")
+    with patch("neoagent.agent._create_provider") as m:
+        m.return_value = MagicMock()
+        orch = Orchestrator(config)
+
+    tool = DelegateTaskTool(orchestrator=orch)
+    assert tool.is_concurrent_safe is True

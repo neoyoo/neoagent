@@ -55,6 +55,7 @@ class DelegateTaskTool(BaseTool):
     )
     input_model: type[BaseModel] = DelegateTaskInput
     permission: str = "auto"
+    is_concurrent_safe: bool = True
 
     def __init__(self, orchestrator: "Orchestrator", depth: int = 0) -> None:
         self._orchestrator = orchestrator

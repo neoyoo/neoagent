@@ -362,3 +362,46 @@ class TestCreateWorkerAgent:
         # args[3] is a UUID string — just check it's a non-empty string
         assert isinstance(args[3], str) and len(args[3]) > 0
         assert args[4] == 0
+
+    def test_create_worker_agent_tool_instances_are_isolated(self) -> None:
+        """Each worker should get its own copy of tools, not the shared instance."""
+        import copy
+        from neoagent.config import NeoAgentConfig
+        from neoagent.core.types import ToolResult
+        from neoagent.tools.base import BaseTool
+        from pydantic import BaseModel as _BM
+
+        class StatefulTool(BaseTool):
+            name = "stateful_test_tool"
+            description = "test"
+            class _In(_BM):
+                x: int = 0
+            input_model = _In
+            permission = "auto"
+
+            async def execute(self, input):
+                return ToolResult(call_id="", output="ok")
+
+        original_tool = StatefulTool()
+
+        orch = MagicMock()
+        orch.config = NeoAgentConfig(api_key="test", model="claude-haiku-4-5")
+        orch._tool_pool = {"stateful_test_tool": original_tool}
+        orch.max_depth = 2
+
+        card = WorkerCard(
+            name="w",
+            description="",
+            instruction="help",
+            tags=(),
+            model=None,
+            tools=("stateful_test_tool",),
+        )
+
+        with patch("neoagent.agent._create_provider") as mock_prov:
+            mock_prov.return_value = MagicMock()
+            with patch("neoagent.multi.worker._setup_event_bubble"):
+                agent = _create_worker_agent(card, orch, depth=0)
+
+        registered_tool = agent._registry.get_tool("stateful_test_tool")
+        assert registered_tool is not original_tool, "Worker should have its own tool copy"

@@ -70,8 +70,8 @@ class TaskResult:
     status: Literal["completed", "failed", "cancelled"]
     output: str | None
     error: str | None
-    usage: TokenUsage
-    work_summary: str
+    usage: TokenUsage | None
+    work_summary: str | None
     turns_completed: int
 
     @property
