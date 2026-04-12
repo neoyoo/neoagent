@@ -4,7 +4,7 @@ import dataclasses
 
 import pytest
 
-from neoagent.multi.worker import WorkerCard
+from neoagent.multi.worker import WorkerCard, WorkerPool
 
 
 class TestWorkerCard:
@@ -79,3 +79,89 @@ class TestWorkerCard:
         )
         assert isinstance(card.tools, tuple)
         assert card.tools == ("bash", "read", "write")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_card(name: str, description: str = "desc") -> WorkerCard:
+    return WorkerCard(
+        name=name,
+        description=description,
+        instruction=f"You are {name}.",
+        tags=(),
+        model=None,
+        tools=(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# WorkerPool tests
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerPool:
+    def test_worker_pool_register_and_find(self) -> None:
+        pool = WorkerPool()
+        card = _make_card("alpha")
+        pool.register(card)
+        assert pool.find("alpha") is card
+
+    def test_worker_pool_find_missing_returns_none(self) -> None:
+        pool = WorkerPool()
+        assert pool.find("nonexistent") is None
+
+    def test_worker_pool_list_all_empty(self) -> None:
+        pool = WorkerPool()
+        assert pool.list_all() == []
+
+    def test_worker_pool_list_all_returns_all(self) -> None:
+        pool = WorkerPool()
+        cards = [_make_card("a"), _make_card("b"), _make_card("c")]
+        for card in cards:
+            pool.register(card)
+        result = pool.list_all()
+        assert len(result) == 3
+        assert set(c.name for c in result) == {"a", "b", "c"}
+
+    def test_worker_pool_register_collision_overwrites(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        pool = WorkerPool()
+        original = _make_card("bot", description="original")
+        replacement = _make_card("bot", description="replacement")
+        pool.register(original)
+        with caplog.at_level(logging.WARNING, logger="neoagent.multi.worker"):
+            pool.register(replacement)
+        found = pool.find("bot")
+        assert found is replacement
+        assert any("bot" in record.message for record in caplog.records if record.levelno == logging.WARNING)
+
+    def test_worker_pool_remove_existing(self) -> None:
+        pool = WorkerPool()
+        pool.register(_make_card("x"))
+        assert pool.remove("x") is True
+        assert pool.find("x") is None
+
+    def test_worker_pool_remove_missing_returns_false(self) -> None:
+        pool = WorkerPool()
+        assert pool.remove("ghost") is False
+
+    def test_worker_pool_list_all_returns_copy(self) -> None:
+        pool = WorkerPool()
+        pool.register(_make_card("sole"))
+        copy = pool.list_all()
+        copy.clear()
+        assert pool.size == 1
+
+    def test_worker_pool_size(self) -> None:
+        pool = WorkerPool()
+        assert pool.size == 0
+        pool.register(_make_card("p"))
+        assert pool.size == 1
+        pool.register(_make_card("q"))
+        assert pool.size == 2
+        pool.remove("p")
+        assert pool.size == 1
