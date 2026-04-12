@@ -239,6 +239,25 @@ class NeoAgent:
             self._observer.close()
             self._observer = None
 
+    def enable_usage_tracking(self) -> "UsageTracker":
+        """Enable token usage tracking. Returns a UsageTracker for inspection.
+
+        The tracker subscribes to ProviderResponseEvent on the EventBus and
+        accumulates input/output token counts per model name.
+
+        Usage::
+
+            tracker = agent.enable_usage_tracking()
+            await agent.chat("hello")
+            print(tracker.total_input_tokens, tracker.total_output_tokens)
+        """
+        from neoagent.eval.usage import UsageTracker
+        from neoagent.events import ProviderResponseEvent
+        tracker = UsageTracker()
+        tracker._current_model = self._provider.model
+        self._event_bus.subscribe(ProviderResponseEvent, tracker._handle_response)
+        return tracker
+
     # ── Hook API ──────────────────────────────────────────────────────────────
 
     def hook(self, hook_type: HookType, handler: HookHandler, priority: int = 0) -> None:
