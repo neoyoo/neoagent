@@ -115,6 +115,26 @@ class JsonFileStorage:
     def delete(self, session_id: str) -> None:
         self._path(session_id).unlink(missing_ok=True)
 
+    def cleanup(self, max_age_days: int = 30, max_sessions: int = 100) -> list[str]:
+        import time
+        now = time.time()
+        max_age_secs = max_age_days * 86400
+        paths = sorted(self._base_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
+        removed: list[str] = []
+        surviving = []
+        for p in paths:
+            if now - p.stat().st_mtime > max_age_secs:
+                p.unlink(missing_ok=True)
+                removed.append(p.stem)
+            else:
+                surviving.append(p)
+        if len(surviving) > max_sessions:
+            to_remove = surviving[:len(surviving) - max_sessions]
+            for p in to_remove:
+                p.unlink(missing_ok=True)
+                removed.append(p.stem)
+        return removed
+
 
 def _message_to_dict(msg: Message) -> dict:
     if isinstance(msg.content, str):

@@ -314,3 +314,53 @@ class TestResumeValidation:
 
         with pytest.raises(RuntimeError, match="No SessionStorage configured"):
             agent.resume("any-id")
+
+
+# ── Task 4: JsonFileStorage.cleanup() ────────────────────────────────────────
+
+class TestJsonFileStorageCleanup:
+    def _create_session_with_mtime(self, storage, session_id, mtime_offset_secs):
+        import time, os
+        session = Session.create(session_id=session_id)
+        storage.save(session)
+        path = storage._base_dir / f"{session_id}.json"
+        target_time = time.time() + mtime_offset_secs
+        os.utime(path, (target_time, target_time))
+
+    def test_cleanup_removes_old_sessions(self, tmp_path):
+        storage = JsonFileStorage(tmp_path)
+        for i in range(3):
+            self._create_session_with_mtime(storage, f"old-{i}", -(31 * 86400))
+        self._create_session_with_mtime(storage, "new-1", -100)
+        removed = storage.cleanup(max_age_days=30, max_sessions=100)
+        assert set(removed) == {"old-0", "old-1", "old-2"}
+        assert (tmp_path / "new-1.json").exists()
+
+    def test_cleanup_respects_max_sessions(self, tmp_path):
+        storage = JsonFileStorage(tmp_path)
+        for i in range(5):
+            self._create_session_with_mtime(storage, f"sess-{i}", -(5 - i) * 100)
+        removed = storage.cleanup(max_age_days=365, max_sessions=3)
+        assert len(removed) == 2
+        assert set(removed) == {"sess-0", "sess-1"}
+
+    def test_cleanup_returns_removed_ids(self, tmp_path):
+        storage = JsonFileStorage(tmp_path)
+        self._create_session_with_mtime(storage, "a", -(40 * 86400))
+        self._create_session_with_mtime(storage, "b", -(35 * 86400))
+        self._create_session_with_mtime(storage, "c", -100)
+        removed = storage.cleanup(max_age_days=30, max_sessions=100)
+        assert isinstance(removed, list)
+        assert set(removed) == {"a", "b"}
+
+    def test_cleanup_empty_dir_returns_empty(self, tmp_path):
+        storage = JsonFileStorage(tmp_path)
+        removed = storage.cleanup(max_age_days=30, max_sessions=100)
+        assert removed == []
+
+    def test_cleanup_no_violation(self, tmp_path):
+        storage = JsonFileStorage(tmp_path)
+        for i in range(3):
+            self._create_session_with_mtime(storage, f"keep-{i}", -100)
+        removed = storage.cleanup(max_age_days=30, max_sessions=10)
+        assert removed == []
