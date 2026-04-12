@@ -276,44 +276,40 @@ class TestSpawnWorkerFlow:
 class TestParallelWorkers:
     @pytest.mark.asyncio
     @patch("neoagent.agent._create_provider")
+    @patch("neoagent.multi.tools.delegate_task._create_worker_agent")
     async def test_parallel_two_workers_one_fails_one_succeeds(
-        self, mock_prov: MagicMock
+        self, mock_create: MagicMock, mock_prov: MagicMock
     ) -> None:
         """Two parallel workers: failure is isolated, other continues."""
         mock_prov.return_value = _mock_provider()
+
+        def create_side_effect(card, orch, depth, task_id=""):
+            agent = MagicMock()
+            if card.name == "worker-a":
+                agent.run = AsyncMock(side_effect=RuntimeError("worker-a crashed"))
+            else:
+                agent.run = AsyncMock(
+                    return_value=_make_completed_conversation("worker-b done")
+                )
+            return agent
+
+        mock_create.side_effect = create_side_effect
 
         orch = Orchestrator(_make_config())
         orch.register_worker(_make_worker_card("worker-a"))
         orch.register_worker(_make_worker_card("worker-b"))
 
-        async def run_task(worker_name: str, should_fail: bool):
-            tool = DelegateTaskTool(orchestrator=orch, depth=0)
-            with patch(
-                "neoagent.multi.tools.delegate_task._create_worker_agent"
-            ) as mc:
-                if should_fail:
-                    mc.return_value = MagicMock(
-                        run=AsyncMock(side_effect=RuntimeError("worker-a crashed"))
-                    )
-                else:
-                    mc.return_value = MagicMock(
-                        run=AsyncMock(
-                            return_value=_make_completed_conversation("worker-b done")
-                        )
-                    )
-                inp = DelegateTaskInput(worker_name=worker_name, instruction="Do work")
-                return await tool.execute(inp)
-
         results = await asyncio.gather(
-            run_task("worker-a", should_fail=True),
-            run_task("worker-b", should_fail=False),
+            DelegateTaskTool(orchestrator=orch, depth=0).execute(
+                DelegateTaskInput(worker_name="worker-a", instruction="Do work")
+            ),
+            DelegateTaskTool(orchestrator=orch, depth=0).execute(
+                DelegateTaskInput(worker_name="worker-b", instruction="Do work")
+            ),
         )
 
-        # worker-a failed → is_error=True
         assert results[0].is_error is True
         assert "failed" in results[0].output
-
-        # worker-b succeeded
         assert results[1].is_error is False
         assert "worker-b done" in results[1].output
 

@@ -184,9 +184,9 @@ class QueryLoop:
                     _msgs = pre_result.modified_data.get("messages", msgs)
                     _schemas = pre_result.modified_data.get("tools", schemas)
 
-            response = await self._provider.create(system=_system, messages=_msgs, tools=_schemas, max_tokens=_DEFAULT_MAX_TOKENS)
+            response = await self._provider.create(system=_system, messages=list(_msgs), tools=_schemas, max_tokens=_DEFAULT_MAX_TOKENS)
             if response.stop_reason == "max_tokens":
-                response = await self._retry_with_higher_max(_system, _msgs, _schemas)
+                response = await self._retry_with_higher_max(_system, list(_msgs), _schemas)
 
             # post_provider_call hook (after potential retry)
             if self._hook_manager and response.stop_reason != "max_tokens":
@@ -246,6 +246,7 @@ class QueryLoop:
                         token_delta=token_delta,
                         items_stored=items_stored,
                     ))
+                msgs.append(Message(role="assistant", content=response.content))
                 return ConversationResult(turns=turns, reason="completed")
             if self._executor is None:
                 raise RuntimeError(
