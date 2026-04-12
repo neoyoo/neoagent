@@ -1,4 +1,5 @@
 from __future__ import annotations
+import contextvars
 import json
 import logging
 from typing import TYPE_CHECKING
@@ -12,6 +13,17 @@ if TYPE_CHECKING:
     from neoagent.session import SessionState
 
 logger = logging.getLogger(__name__)
+
+# Module-level ContextVar so concurrent FastAPI requests each carry their own
+# session state without overwriting each other (replaces instance attribute).
+_current_session_state: contextvars.ContextVar["SessionState | None"] = contextvars.ContextVar(
+    "_current_session_state", default=None
+)
+
+
+def set_session_state(state: "SessionState | None") -> None:
+    """Set the session state for the current execution context."""
+    _current_session_state.set(state)
 
 
 class ToolSearchInput(BaseModel):
@@ -57,8 +69,6 @@ class ToolSearchTool(BaseTool):
     ) -> None:
         self._deferred = deferred_registry
         self._registry = tool_registry
-        # Set by QueryLoop before each turn; tracks per-session promoted tools.
-        self._session_state: "SessionState | None" = None
 
     async def execute(self, input: BaseModel) -> ToolResult:
         """Search + promote in session + return name/description as JSON array."""
@@ -86,8 +96,9 @@ class ToolSearchTool(BaseTool):
 
         # 3. Promote matched tools in session state (session-scoped) and global registry
         if promoted_names:
-            if self._session_state is not None:
-                self._session_state.promoted_tools.update(promoted_names)
+            ss = _current_session_state.get()
+            if ss is not None:
+                ss.promoted_tools.update(promoted_names)
             # Also promote in global registry for backward compat (loop uses session state
             # as the source of truth when session state is available)
             self._deferred.promote(promoted_names)

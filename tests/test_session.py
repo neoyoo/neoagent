@@ -329,3 +329,36 @@ def test_session_storage_field_not_serialized(tmp_path: Path):
     raw = _json.loads((tmp_path / "no-storage-in-json.json").read_text())
     assert "_storage" not in raw
     assert "storage" not in raw
+
+
+# ── S7: Session file permissions ──────────────────────────────────────────────
+
+
+def test_storage_save_file_permissions_are_600(tmp_path: Path):
+    """save() must create session files with owner-only permissions (0o600)."""
+    import os
+    store = JsonFileStorage(tmp_path)
+    s = Session.create(session_id="perms-test")
+    store.save(s)
+    file_path = tmp_path / "perms-test.json"
+    assert file_path.exists()
+    actual_mode = os.stat(file_path).st_mode & 0o777
+    assert actual_mode == 0o600, (
+        f"Expected file permissions 0o600, got 0o{actual_mode:03o}"
+    )
+
+
+def test_storage_save_overwrites_with_correct_permissions(tmp_path: Path):
+    """Overwriting an existing session file must maintain 0o600 permissions."""
+    import os
+    store = JsonFileStorage(tmp_path)
+    s = Session.create(session_id="overwrite-perms")
+    store.save(s)
+    # Save again to overwrite
+    s.metadata["updated"] = True
+    store.save(s)
+    file_path = tmp_path / "overwrite-perms.json"
+    actual_mode = os.stat(file_path).st_mode & 0o777
+    assert actual_mode == 0o600, (
+        f"Expected file permissions 0o600 after overwrite, got 0o{actual_mode:03o}"
+    )

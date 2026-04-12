@@ -337,7 +337,18 @@ class NeoAgent:
             command: Subprocess command (e.g. ["npx", "@anthropic/mcp-server-github"]).
             env:     Optional extra env vars forwarded to the subprocess (merged
                      into the whitelist-filtered env). Use for tokens/secrets.
+
+        Security: Only pass trusted commands. The command is executed as a
+        subprocess — do not pass user-controlled input directly.
         """
+        import re
+        if not command:
+            raise ValueError("MCP server command must not be empty")
+        # Block obvious shell injection in binary name
+        if re.search(r'[;&|`$(){}]', command[0]):
+            raise ValueError(
+                f"MCP server command contains shell metacharacters: {command[0]!r}"
+            )
         transport = StdioTransport(command=command, env=env)
         client = MCPClient(name=name, transport=transport)
         await client.connect()

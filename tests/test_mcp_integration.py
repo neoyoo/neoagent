@@ -507,3 +507,86 @@ async def test_tool_search_updates_session_state_promoted_tools():
 
     # Session state must have the promoted tool
     assert "github__create_issue" in session_state.promoted_tools
+
+
+# ── S8: MCP command validation ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+@patch("neoagent.agent._create_provider")
+async def test_add_mcp_server_empty_command_raises(mock_create):
+    """add_mcp_server() with an empty command list must raise ValueError."""
+    mock_create.return_value = _make_mock_provider()
+    config = NeoAgentConfig(api_key="test")
+    agent = NeoAgent(config)
+
+    with pytest.raises(ValueError, match="must not be empty"):
+        await agent.add_mcp_server("bad", command=[])
+
+    await agent.close()
+
+
+@pytest.mark.asyncio
+@patch("neoagent.agent._create_provider")
+async def test_add_mcp_server_semicolon_in_command_raises(mock_create):
+    """add_mcp_server() with shell metacharacter ';' in binary raises ValueError."""
+    mock_create.return_value = _make_mock_provider()
+    config = NeoAgentConfig(api_key="test")
+    agent = NeoAgent(config)
+
+    with pytest.raises(ValueError, match="shell metacharacters"):
+        await agent.add_mcp_server("bad", command=["npx; rm -rf /"])
+
+    await agent.close()
+
+
+@pytest.mark.asyncio
+@patch("neoagent.agent._create_provider")
+async def test_add_mcp_server_pipe_in_command_raises(mock_create):
+    """add_mcp_server() with shell metacharacter '|' in binary raises ValueError."""
+    mock_create.return_value = _make_mock_provider()
+    config = NeoAgentConfig(api_key="test")
+    agent = NeoAgent(config)
+
+    with pytest.raises(ValueError, match="shell metacharacters"):
+        await agent.add_mcp_server("bad", command=["cmd|evil"])
+
+    await agent.close()
+
+
+@pytest.mark.asyncio
+@patch("neoagent.agent._create_provider")
+async def test_add_mcp_server_backtick_in_command_raises(mock_create):
+    """add_mcp_server() with backtick in binary raises ValueError."""
+    mock_create.return_value = _make_mock_provider()
+    config = NeoAgentConfig(api_key="test")
+    agent = NeoAgent(config)
+
+    with pytest.raises(ValueError, match="shell metacharacters"):
+        await agent.add_mcp_server("bad", command=["`id`"])
+
+    await agent.close()
+
+
+@pytest.mark.asyncio
+@patch("neoagent.agent._create_provider")
+async def test_add_mcp_server_metacharacters_only_checked_in_binary(mock_create):
+    """Shell metacharacters in args (not binary) must not raise ValueError."""
+    mock_create.return_value = _make_mock_provider()
+    config = NeoAgentConfig(api_key="test")
+    agent = NeoAgent(config)
+
+    # The binary "npx" is safe; arg may contain special chars (e.g. URL with ;)
+    # This should NOT raise — the check is only on command[0]
+    with patch("neoagent.agent.StdioTransport") as mock_transport_cls:
+        mock_transport = AsyncMock()
+        mock_transport_cls.return_value = mock_transport
+        with patch("neoagent.agent.MCPClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.connect = AsyncMock()
+            mock_client_cls.return_value = mock_client
+            with patch("neoagent.agent.create_mcp_tools", return_value=[]):
+                # Should NOT raise — metacharacter is in arg, not binary
+                await agent.add_mcp_server("ok", command=["npx", "arg;with;semicolons"])
+
+    await agent.close()

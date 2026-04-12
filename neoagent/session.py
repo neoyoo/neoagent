@@ -99,8 +99,15 @@ class JsonFileStorage:
         return path
 
     def save(self, session: Session) -> None:
+        import os
         data = _session_to_dict(session)
-        self._path(session.id).write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        content = json.dumps(data, ensure_ascii=False, indent=2)
+        path = self._path(session.id)
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, content.encode("utf-8"))
+        finally:
+            os.close(fd)
 
     def load(self, session_id: str) -> Session:
         path = self._path(session_id)
