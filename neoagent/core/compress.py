@@ -11,10 +11,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _KEEP_RECENT = 6
-# NOTE: cl100k_base is GPT-4's tokenizer. For Anthropic models this gives
-# approximate counts (typically within 10-20%). Accurate enough for compression
-# threshold decisions. A future improvement could accept a provider-specific tokenizer.
-_ENCODING = tiktoken.get_encoding("cl100k_base")
 _SUMMARIZE_SYSTEM_TEMPLATE = """\
 You are a context compression assistant. Compress the conversation below using this structure:
 
@@ -49,20 +45,24 @@ def _message_to_text(msg: Message) -> str:
     return " ".join(parts)
 
 class ContextCompressor:
-    def __init__(self, provider: "Provider", max_failures: int = 3) -> None:
+    def __init__(self, provider: "Provider", max_failures: int = 3, tokenizer=None) -> None:
         self._provider = provider
         self._max_failures = max_failures
+        if tokenizer is not None:
+            self._enc = tokenizer
+        else:
+            self._enc = tiktoken.get_encoding("cl100k_base")
 
     def estimate_tokens(self, messages: list[Message]) -> int:
         total = 0
         for msg in messages:
-            total += len(_ENCODING.encode(_message_to_text(msg)))
+            total += len(self._enc.encode(_message_to_text(msg)))
         return total
 
     def estimate_tools_tokens(self, schemas: list[dict]) -> int:
         if not schemas:
             return 0
-        return len(_ENCODING.encode(json.dumps(schemas)))
+        return len(self._enc.encode(json.dumps(schemas)))
 
     def should_compress(self, messages: list[Message], schemas: list[dict], context_budget: int) -> bool:
         return (self.estimate_tokens(messages) + self.estimate_tools_tokens(schemas)) > context_budget * 0.7

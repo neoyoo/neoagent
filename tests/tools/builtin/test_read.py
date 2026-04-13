@@ -84,3 +84,33 @@ class TestReadTool:
         r = await t.execute(ReadInput(file_path=str(f)))
         assert r.is_error is False
         assert "safe content" in r.output
+
+    @pytest.mark.asyncio
+    async def test_offset_and_limit_streaming(self, tmp_path):
+        """offset+limit reads only the requested slice (streaming behaviour)."""
+        lines = [f"line{i}" for i in range(20)]
+        f = tmp_path / "big.txt"
+        f.write_text("\n".join(lines))
+        t = ReadTool(allowed_directories=[tmp_path])
+        r = await t.execute(ReadInput(file_path=str(f), offset=5, limit=3))
+        assert r.is_error is False
+        # lines 5,6,7 (0-indexed) → numbered 6,7,8
+        assert "6\tline5" in r.output
+        assert "7\tline6" in r.output
+        assert "8\tline7" in r.output
+        # lines before offset and after limit should not appear
+        assert "line4" not in r.output
+        assert "line8" not in r.output
+
+    @pytest.mark.asyncio
+    async def test_no_limit_reads_whole_file(self, tmp_path):
+        """Reading without a custom limit returns all lines."""
+        lines = [f"row{i}" for i in range(10)]
+        f = tmp_path / "all.txt"
+        f.write_text("\n".join(lines))
+        t = ReadTool(allowed_directories=[tmp_path])
+        # default limit=2000 is large enough to capture all 10 lines
+        r = await t.execute(ReadInput(file_path=str(f)))
+        assert r.is_error is False
+        for i in range(10):
+            assert f"row{i}" in r.output

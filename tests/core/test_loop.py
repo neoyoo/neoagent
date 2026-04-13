@@ -155,16 +155,6 @@ class TestToolFlow:
         assert any(isinstance(b, ToolResultBlock) for b in last.content)
 
 class TestOnTurn:
-    async def test_called_per_turn(self):
-        p = _make_provider(_tool_use_response("t1", "r", {}), _text_response("done"))
-        ex = _make_executor([ToolResult(call_id="t1", output="ok")])
-        calls = []
-        loop = QueryLoop(provider=p, tool_registry=_make_registry(), prompt_builder=_make_prompt_builder(), on_turn=calls.append, tool_executor=ex)
-        await loop.run(session=_session_with("go"))
-        assert len(calls) == 2
-        assert calls[0].stop_reason == "tool_use"
-        assert calls[1].stop_reason == "end_turn"
-
     async def test_none_callback_ok(self):
         p = _make_provider(_text_response())
         loop = QueryLoop(provider=p, tool_registry=_make_registry(), prompt_builder=_make_prompt_builder())

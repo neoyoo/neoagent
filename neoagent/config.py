@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -17,3 +17,12 @@ class NeoAgentConfig:
     memory_project_key: str | None = None
     session_dir: Path | None = None
     system_prompt: str | None = None
+
+    def __repr__(self) -> str:
+        fields = []
+        for f in self.__dataclass_fields__:
+            val = getattr(self, f)
+            if f == "api_key" and val:
+                val = val[:4] + "***" if len(val) > 4 else "***"
+            fields.append(f"{f}={val!r}")
+        return f"{self.__class__.__name__}({', '.join(fields)})"

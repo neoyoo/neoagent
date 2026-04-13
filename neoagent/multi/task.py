@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 import threading
@@ -200,6 +199,29 @@ class TaskTracker:
     # Cancellation
     # ------------------------------------------------------------------
 
+    def cleanup(self, max_completed: int = 1000) -> int:
+        """Remove oldest completed tasks exceeding *max_completed*.
+
+        Only tasks in ``completed``, ``failed``, or ``cancelled`` state are
+        considered.  The oldest entries (by dict insertion order) are removed
+        first.
+
+        Returns the number of tasks removed.
+        """
+        with self._lock:
+            completed = [
+                tid for tid, result in self._results.items()
+                if result.status in ("completed", "failed", "cancelled")
+            ]
+            if len(completed) <= max_completed:
+                return 0
+            to_remove = completed[: len(completed) - max_completed]
+            for tid in to_remove:
+                self._tasks.pop(tid, None)
+                self._results.pop(tid, None)
+                self._metadata.pop(tid, None)
+            return len(to_remove)
+
     def cancel(self, task_id: str) -> bool:
         """Cancel *task_id* via its associated asyncio.Task.
 
@@ -312,6 +334,8 @@ async def _run_worker(
         try:
             parsed = json.loads(ctx_item)
             role = parsed.get("role", "user")
+            if role not in ("user", "assistant"):
+                role = "user"
             content = parsed.get("content", ctx_item)
             messages.append(_Message(role=role, content=content))
         except (json.JSONDecodeError, AttributeError):

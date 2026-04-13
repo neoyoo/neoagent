@@ -5,7 +5,7 @@ from neoagent.events import (
     ProviderRequestEvent, ProviderResponseEvent,
     ToolCallEvent, ToolResultEvent,
     CompressCheckEvent, CompressDoneEvent, CompressFallbackEvent,
-    MemoryExtractEvent, SkillChangeEvent,
+    MemoryExtractEvent,
 )
 from neoagent.observe import Observer
 
@@ -40,7 +40,7 @@ class ObserverSubscriber:
             (CompressDoneEvent, self._on_compress_done),
             (CompressFallbackEvent, self._on_compress_fallback),
             (MemoryExtractEvent, self._on_memory_extract),
-            (SkillChangeEvent, self._on_skill_change),
+            # NOTE: SkillChangeEvent is defined but not yet wired; PromptBuilder needs EventBus access (planned for future).
         ]
         for event_type, handler in pairs:
             bus.subscribe(event_type, handler)
@@ -78,9 +78,3 @@ class ObserverSubscriber:
             self._observer.on_memory_extract_done(e.items_stored, list(e.filenames))
         else:
             self._observer.on_memory_extract_skip(e.tool_calls, e.token_delta)
-
-    def _on_skill_change(self, e: SkillChangeEvent) -> None:
-        if e.active:
-            self._observer.on_skill_activate(e.name)
-        else:
-            self._observer.on_skill_deactivate(e.name)

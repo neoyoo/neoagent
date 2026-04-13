@@ -37,7 +37,12 @@ class GrepTool(BaseTool):
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await proc.communicate()
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return ToolResult(call_id="", output="Grep timed out after 30s", is_error=True)
             output = stdout.decode("utf-8", errors="replace")
             if proc.returncode == 1:  # no matches
                 return ToolResult(call_id="", output="No matches found")

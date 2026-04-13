@@ -1,6 +1,6 @@
 from __future__ import annotations
 import logging
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 from neoagent.core.compress import ContextCompressor
 from neoagent.events import (
     EventBus,
@@ -8,8 +8,7 @@ from neoagent.events import (
     MemoryExtractEvent,
     ProviderRequestEvent, ProviderResponseEvent,
     TurnCompleteEvent,
-    # SkillChangeEvent: TODO v3.2 — emit in PromptBuilder.activate_skill/deactivate_skill
-    #   once PromptBuilder receives EventBus access.
+    # NOTE: SkillChangeEvent is defined but not yet wired; PromptBuilder needs EventBus access (planned for future).
 )
 
 if TYPE_CHECKING:
@@ -20,17 +19,16 @@ if TYPE_CHECKING:
     from neoagent.tools.deferred import DeferredToolRegistry
 
 from neoagent.core.prompt import PromptBuilder
-from neoagent.core.types import ConversationResult, Message, TextBlock, ToolCall, ToolResult, ToolResultBlock, ToolUseBlock, Turn
+from neoagent.core.types import ConversationResult, Message, TextBlock, ToolCall, ToolResult, ToolResultBlock, Turn
 from neoagent.providers.base import Provider, Response
 from neoagent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 _DEFAULT_MAX_TOKENS = 8192
-_MAX_RETRY_TOKENS = 16384
 
 class QueryLoop:
     def __init__(self, provider: Provider, tool_registry: ToolRegistry, prompt_builder: PromptBuilder,
-                 max_turns: int = 30, context_budget: int = 0, on_turn: Callable[[Turn], None] | None = None,
+                 max_turns: int = 30, context_budget: int = 0,
                  memory_manager: "MemoryManager | None" = None,
                  event_bus: EventBus | None = None,
                  tool_executor: "ToolExecutor | None" = None,
@@ -42,7 +40,6 @@ class QueryLoop:
         self._prompt_builder = prompt_builder
         self.max_turns = max_turns
         self.context_budget = context_budget if context_budget > 0 else provider.get_context_window()
-        self._on_turn = on_turn
         self._compressor = ContextCompressor(provider=provider)
         self._memory_manager = memory_manager
         self._bus = event_bus if event_bus is not None else EventBus()
@@ -85,12 +82,10 @@ class QueryLoop:
             session_state = _session.state
 
         # Propagate session state into ToolSearchTool so promote writes to session scope.
-        # We look up the tool by well-known name to avoid a hard import cycle.
+        # Uses a ContextVar to avoid race conditions in concurrent FastAPI requests.
         if self._deferred_registry and session_state is not None:
-            from neoagent.tools.builtin.tool_search import ToolSearchTool as _TST
-            _ts = self._registry.get_tool("tool_search")
-            if isinstance(_ts, _TST):
-                _ts._session_state = session_state
+            from neoagent.tools.builtin.tool_search import set_session_state as _set_ss
+            _set_ss(session_state)
 
         turns: list[Turn] = []
         effective_max_turns = max_turns if max_turns is not None else self.max_turns
@@ -176,8 +171,6 @@ class QueryLoop:
                         tool_calls=[], tool_results=[], stop_reason="end_turn",
                     )
                     turns.append(turn)
-                    if self._on_turn:
-                        self._on_turn(turn)
                     return ConversationResult(turns=turns, reason="completed")
                 if pre_result.action == "modify" and pre_result.modified_data:
                     _system = pre_result.modified_data.get("system", system)
@@ -209,8 +202,6 @@ class QueryLoop:
                 if session_state:
                     session_state.total_input_tokens += response.input_tokens
                     session_state.total_output_tokens += response.output_tokens
-                if self._on_turn:
-                    self._on_turn(turn)
                 return ConversationResult(turns=turns, reason="completed")
             self._bus.emit(ProviderResponseEvent(
                 content=tuple(response.content), stop_reason=response.stop_reason,
@@ -229,8 +220,6 @@ class QueryLoop:
                     stop_reason=turn.stop_reason,
                     tool_call_count=len(turn.tool_calls),
                 ))
-                if self._on_turn:
-                    self._on_turn(turn)
                 if self._memory_manager:
                     current_tokens = self._compressor.estimate_tokens(msgs)
                     tool_calls_before = session_state.memory_tool_calls if session_state else 0
@@ -239,7 +228,7 @@ class QueryLoop:
                         msgs, current_tokens, session_state=session_state
                     )
                     token_delta = max(0, current_tokens - token_baseline_before)
-                    # TODO: filenames not yet returned by extractor; tracked as future improvement
+                    # NOTE: filenames not populated yet — extractor returns text summaries, not file references.
                     self._bus.emit(MemoryExtractEvent(
                         triggered=triggered,
                         tool_calls=tool_calls_before,
@@ -268,11 +257,9 @@ class QueryLoop:
                 stop_reason=turn.stop_reason,
                 tool_call_count=len(turn.tool_calls),
             ))
-            if self._on_turn:
-                self._on_turn(turn)
             _session.save_if_storage()  # per-turn auto-save (tool_use)
         return ConversationResult(turns=turns, reason="max_turns")
 
     async def _retry_with_higher_max(self, system, messages, tools):
-        higher = min(_MAX_RETRY_TOKENS, _DEFAULT_MAX_TOKENS * 2)
+        higher = _DEFAULT_MAX_TOKENS * 2
         return await self._provider.create(system=system, messages=messages, tools=tools, max_tokens=higher)

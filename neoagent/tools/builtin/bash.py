@@ -15,13 +15,13 @@ _DEFAULT_BLOCKED_PATTERNS = [
     r"\bdd\s+.*of=/dev/",
     r">\s*/dev/sd",
     r"\b(curl|wget)\b.*\|\s*(ba)?sh",  # curl | sh
-    r"\bpython[23]?\s+-(c|m)\b",       # python -c / python3 -c / python -m
-    r"\bperl\s+-e\b",                   # perl -e
-    r"\bruby\s+-e\b",                   # ruby -e
-    r"\bnode\s+-e\b",                   # node -e
-    r"\bsh\s+-c\b",                     # sh -c
-    r"\bbash\s+-c\b",                   # bash -c
-    r"\beval\s+",                       # eval anything
+    r"\bpython[23]?(\.\d+)?\s+-(c|m)\b",  # python -c / python3.12 -c / python -m
+    r"\bperl\s+-e\b",                       # perl -e
+    r"\bruby\s+-e\b",                       # ruby -e
+    r"\bnode\s+-e\b",                       # node -e
+    r"\b(ba|da|z|k|tc|c|fi)?sh\s+-c\b",    # sh/bash/dash/zsh/ksh/tcsh/csh/fish -c
+    r"\beval\s+",                            # eval anything
+    r"\|\s*(zsh|ksh|fish|tcsh|csh|dash)\b",  # pipe into alternative shells
 ]
 
 # Environment variable whitelist: only these keys are inherited from the parent process

@@ -1,8 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
 
-_DEFAULT_ALLOWED = [Path.cwd()]
-
 
 def validate_path(file_path: str, allowed_directories: list[Path]) -> Path:
     """Resolve a path and verify it is within an allowed directory.

@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import Callable
 
-from neoagent.events import Event, TaskCompleteEvent, TaskDispatchEvent, WorkerEvent
-
-if TYPE_CHECKING:
-    pass
+from neoagent.events import Event, TaskCompleteEvent, TaskDispatchEvent, WorkerEvent, _ALL_EVENT_TYPES
 
 __all__ = [
     "_setup_event_bubble",
@@ -24,7 +21,7 @@ def _setup_event_bubble(
     worker_name: str,
     task_id: str,
     depth: int,
-) -> None:
+) -> Callable[[], None]:
     """Subscribe to all events on *worker_agent* and bubble them to *orchestrator*.
 
     Each event emitted on the worker's event_bus is wrapped in a WorkerEvent
@@ -33,6 +30,9 @@ def _setup_event_bubble(
 
     Exceptions in the bubble handler are logged but never propagate, so a
     misbehaving orchestrator listener cannot crash the worker.
+
+    Returns a teardown callable that unsubscribes the bubble handler from all
+    event types. Call it when the worker task completes to prevent handler leaks.
     """
     worker_bus = worker_agent._event_bus  # type: ignore[attr-defined]
     orchestrator_bus = orchestrator._event_bus  # type: ignore[attr-defined]
@@ -55,3 +55,9 @@ def _setup_event_bubble(
             )
 
     worker_bus.subscribe_all(_bubble)
+
+    def _teardown() -> None:
+        for event_type in _ALL_EVENT_TYPES:
+            worker_bus.unsubscribe(event_type, _bubble)
+
+    return _teardown

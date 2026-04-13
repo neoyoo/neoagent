@@ -1,9 +1,14 @@
 from __future__ import annotations
+import contextvars
 import json
 import pytest
 from unittest.mock import MagicMock, AsyncMock
 from pydantic import BaseModel
-from neoagent.tools.builtin.tool_search import ToolSearchTool, ToolSearchInput
+from neoagent.tools.builtin.tool_search import (
+    ToolSearchTool,
+    ToolSearchInput,
+    _current_session_state,
+)
 from neoagent.tools.deferred import DeferredToolRegistry, ToolIndex
 from neoagent.tools.registry import ToolRegistry
 from neoagent.tools.base import BaseTool
@@ -182,3 +187,56 @@ async def test_toolsearch_tool_not_in_registry_skipped():
     result = await t.execute(inp)
     data = json.loads(result.output)
     assert data == []
+
+
+# ── S4: ContextVar isolation (race condition fix) ─────────────────────────────
+
+def test_current_session_state_is_contextvar():
+    """_current_session_state must be a ContextVar for concurrency safety."""
+    assert isinstance(_current_session_state, contextvars.ContextVar)
+
+
+def test_current_session_state_default_is_none():
+    """_current_session_state must default to None."""
+    assert _current_session_state.get() is None
+
+
+def test_set_session_state_sets_contextvar():
+    """set_session_state() must write to _current_session_state."""
+    from neoagent.tools.builtin.tool_search import set_session_state
+    from neoagent.session import SessionState
+
+    state = SessionState()
+    set_session_state(state)
+    assert _current_session_state.get() is state
+    # Reset to None after test
+    set_session_state(None)
+
+
+def test_session_state_is_context_isolated():
+    """Each contextvars.copy_context() run sees its own session state."""
+    import asyncio
+    from neoagent.tools.builtin.tool_search import set_session_state
+    from neoagent.session import SessionState
+
+    state_a = SessionState()
+    state_b = SessionState()
+    results: dict[str, object] = {}
+
+    def _run_a() -> None:
+        set_session_state(state_a)
+        results["a"] = _current_session_state.get()
+
+    def _run_b() -> None:
+        set_session_state(state_b)
+        results["b"] = _current_session_state.get()
+
+    ctx_a = contextvars.copy_context()
+    ctx_b = contextvars.copy_context()
+    ctx_a.run(_run_a)
+    ctx_b.run(_run_b)
+
+    assert results["a"] is state_a
+    assert results["b"] is state_b
+    # Mutations in one context must not affect the other
+    assert results["a"] is not results["b"]

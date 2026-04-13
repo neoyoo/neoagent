@@ -224,6 +224,37 @@ def test_enable_metrics_returns_collector():
     assert isinstance(collector, MetricsCollector)
 
 
+def test_collector_max_turns_cap():
+    """_completed_turns list is trimmed to max_turns when exceeded."""
+    collector = MetricsCollector(max_turns=5)
+
+    # Simulate 8 turns
+    for i in range(8):
+        collector._on_provider_request(_req(turn=i))
+        collector._on_provider_response(_resp(turn=i, input_tokens=10, output_tokens=5))
+        collector._on_turn_complete(_turn_complete(turn_index=i))
+
+    turns = collector.get_turn_metrics()
+    # Only the most recent 5 should be retained
+    assert len(turns) == 5
+    # The newest turn index should be 7 (last emitted)
+    assert turns[-1].turn_index == 7
+    # The oldest retained turn index should be 3 (8 - 5 = 3)
+    assert turns[0].turn_index == 3
+
+
+def test_collector_max_turns_default_large():
+    """Default max_turns=10000 does not trim small turn counts."""
+    collector = MetricsCollector()  # default max_turns=10000
+
+    for i in range(50):
+        collector._on_provider_request(_req(turn=i))
+        collector._on_provider_response(_resp(turn=i))
+        collector._on_turn_complete(_turn_complete(turn_index=i))
+
+    assert len(collector.get_turn_metrics()) == 50
+
+
 def test_enable_metrics_subscribes_to_events():
     from neoagent.agent import NeoAgent
     from neoagent.config import NeoAgentConfig
