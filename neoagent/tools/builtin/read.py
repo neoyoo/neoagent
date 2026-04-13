@@ -1,4 +1,5 @@
 from __future__ import annotations
+import itertools
 from pathlib import Path
 from pydantic import BaseModel
 from neoagent.tools.base import BaseTool
@@ -31,8 +32,12 @@ class ReadTool(BaseTool):
             return ToolResult(call_id="", output=str(e), is_error=True)
         try:
             with open(path, "r") as f:
-                all_lines = f.readlines()
-            selected = all_lines[input.offset : input.offset + input.limit]
+                # Skip offset lines without loading them into memory
+                if input.offset:
+                    for _ in itertools.islice(f, input.offset):
+                        pass
+                # Read only limit lines
+                selected = list(itertools.islice(f, input.limit))
             numbered = []
             for i, line in enumerate(selected, start=input.offset + 1):
                 numbered.append(f"{i}\t{line.rstrip()}")

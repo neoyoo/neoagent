@@ -358,6 +358,54 @@ class TestTaskTracker:
         assert t1.task_id not in active
         assert t2.task_id in active
 
+    def test_cleanup_removes_oldest_completed(self) -> None:
+        """cleanup() removes the oldest completed tasks beyond max_completed."""
+        tracker = TaskTracker()
+        tasks = [_make_task(f"task {i}") for i in range(10)]
+        for task in tasks:
+            tracker.track(task)
+            tracker.complete(task.task_id, _make_result(task.task_id))
+
+        removed = tracker.cleanup(max_completed=5)
+        assert removed == 5
+
+        # The 5 oldest should be gone
+        for task in tasks[:5]:
+            assert tracker.get_task(task.task_id) is None
+            assert tracker.get_result(task.task_id) is None
+
+        # The 5 newest should still be present
+        for task in tasks[5:]:
+            assert tracker.get_task(task.task_id) is not None
+            assert tracker.get_result(task.task_id) is not None
+
+    def test_cleanup_no_op_when_under_limit(self) -> None:
+        """cleanup() returns 0 when completed count is within max_completed."""
+        tracker = TaskTracker()
+        tasks = [_make_task(f"task {i}") for i in range(3)]
+        for task in tasks:
+            tracker.track(task)
+            tracker.complete(task.task_id, _make_result(task.task_id))
+
+        removed = tracker.cleanup(max_completed=5)
+        assert removed == 0
+        assert len(tracker.list_all()) == 3
+
+    def test_cleanup_skips_active_tasks(self) -> None:
+        """cleanup() must not remove active (not yet completed) tasks."""
+        tracker = TaskTracker()
+        active = _make_task("still running")
+        tracker.track(active)
+
+        completed_tasks = [_make_task(f"done {i}") for i in range(5)]
+        for task in completed_tasks:
+            tracker.track(task)
+            tracker.complete(task.task_id, _make_result(task.task_id))
+
+        tracker.cleanup(max_completed=0)
+        # Active task must survive cleanup
+        assert tracker.get_task(active.task_id) is not None
+
 
 # ---------------------------------------------------------------------------
 # _extract_work_summary tests

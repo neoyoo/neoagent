@@ -57,3 +57,19 @@ class TestGrepTool:
         r = await t.execute(GrepInput(pattern="find me", path=str(tmp_path)))
         assert r.is_error is False
         assert "find me" in r.output
+
+    def test_asyncio_imported(self):
+        """asyncio must be importable from grep module (required for wait_for timeout)."""
+        import importlib
+        import neoagent.tools.builtin.grep as grep_module
+        assert hasattr(grep_module, "asyncio")
+
+    @pytest.mark.asyncio
+    async def test_grep_normal_operation_with_timeout_guard(self, tmp_path):
+        """Normal grep still works correctly after adding wait_for timeout."""
+        f = tmp_path / "source.py"
+        f.write_text("def hello():\n    return 'world'\n")
+        t = GrepTool(allowed_directories=[tmp_path])
+        r = await t.execute(GrepInput(pattern="def hello", path=str(tmp_path)))
+        assert r.is_error is False
+        assert "def hello" in r.output

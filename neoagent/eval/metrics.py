@@ -59,7 +59,8 @@ class MetricsCollector:
     Or simply call ``agent.enable_metrics()`` which sets this up automatically.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_turns: int = 10000) -> None:
+        self._max_turns = max_turns
         # _pending[turn] accumulates intermediate data before TurnCompleteEvent
         self._pending: dict[int, dict] = {}
         self._completed_turns: list[TurnMetrics] = []
@@ -131,6 +132,8 @@ class MetricsCollector:
             tool_names=list(pending["tool_names"]),
         )
         self._completed_turns.append(turn_metrics)
+        if len(self._completed_turns) > self._max_turns:
+            self._completed_turns = self._completed_turns[-self._max_turns :]
 
     def get_turn_metrics(self) -> list[TurnMetrics]:
         """Return a copy of the list of completed TurnMetrics, in order."""
