@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING, AsyncGenerator, Callable
+from typing import TYPE_CHECKING, AsyncGenerator
 
 from neoagent.channels.base import Channel
 from neoagent.core.types import ConversationResult, Message, TextBlock

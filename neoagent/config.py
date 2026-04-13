@@ -23,6 +23,6 @@ class NeoAgentConfig:
         for f in self.__dataclass_fields__:
             val = getattr(self, f)
             if f == "api_key" and val:
-                val = val[:4] + "***"
+                val = val[:4] + "***" if len(val) > 4 else "***"
             fields.append(f"{f}={val!r}")
         return f"{self.__class__.__name__}({', '.join(fields)})"
