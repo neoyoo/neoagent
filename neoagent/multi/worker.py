@@ -135,6 +135,9 @@ def _create_worker_agent(
         import uuid
         task_id = str(uuid.uuid4())
 
-    _setup_event_bubble(agent, orchestrator, card.name, task_id, depth)
+    _teardown = _setup_event_bubble(agent, orchestrator, card.name, task_id, depth)
+    # Attach teardown to the agent so callers can unsubscribe the bubble handler
+    # after the task completes, preventing stale handler accumulation.
+    agent._bubble_teardown = _teardown  # type: ignore[attr-defined]
 
     return agent

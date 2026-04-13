@@ -17,3 +17,12 @@ class NeoAgentConfig:
     memory_project_key: str | None = None
     session_dir: Path | None = None
     system_prompt: str | None = None
+
+    def __repr__(self) -> str:
+        fields = []
+        for f in self.__dataclass_fields__:
+            val = getattr(self, f)
+            if f == "api_key" and val:
+                val = val[:4] + "***"
+            fields.append(f"{f}={val!r}")
+        return f"{self.__class__.__name__}({', '.join(fields)})"

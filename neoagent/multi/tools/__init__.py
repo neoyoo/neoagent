@@ -21,9 +21,6 @@ __all__ = [
     "CancelTaskTool",
     "ListWorkersTool",
     "ListTasksTool",
-    "_format_task_result",
-    "_emit_dispatch_event",
-    "_emit_complete_event",
 ]
 
 

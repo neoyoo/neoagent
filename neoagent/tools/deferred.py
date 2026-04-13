@@ -106,6 +106,8 @@ class DeferredToolRegistry:
 
     def _search_regex(self, pattern: str) -> list[ToolIndex]:
         """Case-insensitive regex search across name and description."""
+        if len(pattern) > 200:
+            pattern = pattern[:200]
         try:
             rx = re.compile(pattern, re.IGNORECASE)
         except re.error:

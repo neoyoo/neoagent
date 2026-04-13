@@ -138,5 +138,10 @@ class DelegateTaskTool(BaseTool):
         self._orchestrator._task_tracker.complete(task_id, result)
         _emit_complete_event(self._orchestrator, result, input.worker_name, self._depth)
 
-        # 8. Format and return
+        # 8. Unsubscribe worker event bubble handler to prevent handler accumulation
+        teardown = getattr(worker_agent, "_bubble_teardown", None)
+        if teardown is not None:
+            teardown()
+
+        # 9. Format and return
         return _format_task_result(result)
