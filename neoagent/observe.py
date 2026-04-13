@@ -194,12 +194,6 @@ class Observer:
 
     # ── Memory events ─────────────────────────────────────────────
 
-    def on_memory_extract_trigger(self, tool_calls: int, token_delta: int) -> None:
-        self._write(
-            f"  MEMORY EXTRACT: triggered (tool_calls={tool_calls}, token_delta={token_delta})",
-            _MAGENTA,
-        )
-
     def on_memory_extract_done(self, items_count: int, filenames: list[str]) -> None:
         self._write(f"  MEMORY STORED: {items_count} item(s) -> {filenames}", _GREEN)
 

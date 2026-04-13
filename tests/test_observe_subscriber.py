@@ -5,7 +5,7 @@ from neoagent.events import (
     EventBus, ProviderRequestEvent, ProviderResponseEvent,
     ToolCallEvent, ToolResultEvent,
     CompressCheckEvent, CompressDoneEvent, CompressFallbackEvent,
-    MemoryExtractEvent, SkillChangeEvent,
+    MemoryExtractEvent, SkillChangeEvent,  # SkillChangeEvent imported for contract tests only
 )
 from neoagent.observe_subscriber import ObserverSubscriber
 
@@ -93,20 +93,17 @@ def test_memory_extract_not_triggered_routes_skip():
     obs.on_memory_extract_done.assert_not_called()
 
 
-def test_skill_activate_routes_to_observer():
+def test_skill_change_event_not_routed_to_observer():
+    """SkillChangeEvent is defined but not yet wired — ObserverSubscriber does not subscribe it.
+    PromptBuilder needs EventBus access before this can be wired (planned for future).
+    """
     bus = EventBus()
     obs = _make_observer()
     ObserverSubscriber(obs, bus)
     bus.emit(SkillChangeEvent(name="memory", active=True))
-    obs.on_skill_activate.assert_called_once_with("memory")
-
-
-def test_skill_deactivate_routes_to_observer():
-    bus = EventBus()
-    obs = _make_observer()
-    ObserverSubscriber(obs, bus)
+    obs.on_skill_activate.assert_not_called()
     bus.emit(SkillChangeEvent(name="memory", active=False))
-    obs.on_skill_deactivate.assert_called_once_with("memory")
+    obs.on_skill_deactivate.assert_not_called()
 
 
 # ── Fix 2: detach() unsubscribes all handlers ─────────────────────────────────

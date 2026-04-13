@@ -8,8 +8,7 @@ from neoagent.events import (
     MemoryExtractEvent,
     ProviderRequestEvent, ProviderResponseEvent,
     TurnCompleteEvent,
-    # SkillChangeEvent: TODO v3.2 — emit in PromptBuilder.activate_skill/deactivate_skill
-    #   once PromptBuilder receives EventBus access.
+    # NOTE: SkillChangeEvent is defined but not yet wired; PromptBuilder needs EventBus access (planned for future).
 )
 
 if TYPE_CHECKING:
@@ -229,7 +228,7 @@ class QueryLoop:
                         msgs, current_tokens, session_state=session_state
                     )
                     token_delta = max(0, current_tokens - token_baseline_before)
-                    # TODO: filenames not yet returned by extractor; tracked as future improvement
+                    # NOTE: filenames not populated yet — extractor returns text summaries, not file references.
                     self._bus.emit(MemoryExtractEvent(
                         triggered=triggered,
                         tool_calls=tool_calls_before,
