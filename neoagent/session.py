@@ -11,6 +11,15 @@ from neoagent.core.types import Message, TextBlock, ToolUseBlock, ToolResultBloc
 
 
 @dataclass
+class FreedToolResult:
+    id: str
+    tool_name: str
+    size: int
+    preview: str
+    original_content: str
+
+
+@dataclass
 class SessionState:
     """Session 内所有跨轮次共享的可变状态。与 Session 一起持久化。"""
     previous_summary: str | None = None
@@ -22,6 +31,11 @@ class SessionState:
     # Tracks which deferred tools have been promoted in this session.
     # DeferredToolRegistry holds the global index; this set controls per-session visibility.
     promoted_tools: set[str] = field(default_factory=set)
+    freed_tool_results: dict[str, FreedToolResult] = field(default_factory=dict)
+    # IDs recalled this turn — freed rewriting skips these so LLM sees full content.
+    recalled_this_turn: set[str] = field(default_factory=set)
+    # Maps tool_use_id → tool_name (used by free_tool_result for lookup/display).
+    tool_use_to_tool_name: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -188,6 +202,17 @@ def _session_to_dict(session: Session) -> dict:
             "total_input_tokens": session.state.total_input_tokens,
             "total_output_tokens": session.state.total_output_tokens,
             "promoted_tools": sorted(session.state.promoted_tools),
+            "freed_tool_results": {
+                k: {
+                    "id": v.id,
+                    "tool_name": v.tool_name,
+                    "size": v.size,
+                    "preview": v.preview,
+                    "original_content": v.original_content,
+                }
+                for k, v in session.state.freed_tool_results.items()
+            },
+            "tool_use_to_tool_name": session.state.tool_use_to_tool_name,
         },
         "messages": [_message_to_dict(m) for m in session.messages],
         "metadata": session.metadata,
@@ -196,6 +221,17 @@ def _session_to_dict(session: Session) -> dict:
 
 def _session_from_dict(data: dict) -> Session:
     state_d = data.get("state", {})
+    _freed_raw = state_d.get("freed_tool_results", {})
+    _freed = {
+        k: FreedToolResult(
+            id=v["id"],
+            tool_name=v["tool_name"],
+            size=v["size"],
+            preview=v["preview"],
+            original_content=v["original_content"],
+        )
+        for k, v in _freed_raw.items()
+    }
     state = SessionState(
         previous_summary=state_d.get("previous_summary"),
         compression_failures=state_d.get("compression_failures", 0),
@@ -204,6 +240,8 @@ def _session_from_dict(data: dict) -> Session:
         total_input_tokens=state_d.get("total_input_tokens", 0),
         total_output_tokens=state_d.get("total_output_tokens", 0),
         promoted_tools=set(state_d.get("promoted_tools", [])),
+        freed_tool_results=_freed,
+        tool_use_to_tool_name=state_d.get("tool_use_to_tool_name", {}),
     )
     messages = [_message_from_dict(m) for m in data.get("messages", [])]
     return Session(

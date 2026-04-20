@@ -15,6 +15,11 @@ class BaseTool(ABC):
     @abstractmethod
     async def execute(self, input: BaseModel) -> ToolResult: ...
 
+    def preview(self, output: str) -> str:
+        """80-char preview for freed placeholders. Override in multimedia tools."""
+        snippet = output.replace("\n", " ").strip()
+        return snippet[:80] + "…" if len(snippet) > 80 else snippet
+
     def get_schema(self) -> dict:
         raw_schema = self.input_model.model_json_schema()
         raw_schema.pop("title", None)

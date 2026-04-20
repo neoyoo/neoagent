@@ -87,6 +87,10 @@ class QueryLoop:
             from neoagent.tools.builtin.tool_search import set_session_state as _set_ss
             _set_ss(session_state)
 
+        # Set full session so free_tool_result / recall_tool_result can access messages.
+        from neoagent.tools.builtin.tool_search import set_current_session as _set_sess
+        _set_sess(_session)
+
         turns: list[Turn] = []
         effective_max_turns = max_turns if max_turns is not None else self.max_turns
         for turn_idx in range(effective_max_turns):
@@ -150,13 +154,26 @@ class QueryLoop:
                     )
                     system = system + deferred_section
 
+            # Apply freed-tool rewriting before sending to provider (non-mutating).
+            if session_state and session_state.freed_tool_results:
+                msgs_for_llm = _apply_freed_to_messages(
+                    msgs,
+                    session_state.freed_tool_results,
+                    session_state.recalled_this_turn,
+                )
+                freed_section = _render_freed_section(session_state.freed_tool_results)
+                if freed_section:
+                    system = system + "\n\n" + freed_section
+            else:
+                msgs_for_llm = msgs
+
             self._bus.emit(ProviderRequestEvent(
-                system=system, messages=tuple(msgs),
+                system=system, messages=tuple(msgs_for_llm),
                 tools=tuple(schemas), turn=turn_idx,
             ))
 
             # pre_provider_call hook
-            _system, _msgs, _schemas = system, msgs, schemas
+            _system, _msgs, _schemas = system, msgs_for_llm, schemas
             if self._hook_manager:
                 from neoagent.hooks import PreProviderCallEvent
                 pre_event = PreProviderCallEvent(
@@ -236,6 +253,8 @@ class QueryLoop:
                         items_stored=items_stored,
                     ))
                 msgs.append(Message(role="assistant", content=response.content))
+                if session_state:
+                    session_state.recalled_this_turn.clear()
                 _session.save_if_storage()  # per-turn auto-save (end_turn)
                 return ConversationResult(turns=turns, reason="completed")
             if self._executor is None:
@@ -250,6 +269,10 @@ class QueryLoop:
             msgs.append(assistant_msg)
             result_msg = Message(role="user", content=[ToolResultBlock(tool_use_id=r.call_id, content=r.output, is_error=r.is_error) for r in results])
             msgs.append(result_msg)
+            # Record tool_use_id → tool_name mapping (used by free_tool_result tool).
+            if session_state:
+                for call in tool_calls:
+                    session_state.tool_use_to_tool_name[call.id] = call.name
             turn = Turn(response=assistant_msg, tool_calls=tool_calls, tool_results=results, stop_reason="tool_use")
             turns.append(turn)
             self._bus.emit(TurnCompleteEvent(
@@ -257,9 +280,67 @@ class QueryLoop:
                 stop_reason=turn.stop_reason,
                 tool_call_count=len(turn.tool_calls),
             ))
+
+            # Clear recalled-this-turn so freed rewriting applies again next turn.
+            if session_state:
+                session_state.recalled_this_turn.clear()
+
             _session.save_if_storage()  # per-turn auto-save (tool_use)
         return ConversationResult(turns=turns, reason="max_turns")
 
     async def _retry_with_higher_max(self, system, messages, tools):
         higher = _DEFAULT_MAX_TOKENS * 2
         return await self._provider.create(system=system, messages=messages, tools=tools, max_tokens=higher)
+
+
+def _apply_freed_to_messages(
+    messages: list[Message],
+    freed: "dict[str, object]",
+    recalled: "set[str]",
+) -> list[Message]:
+    """Return copy of messages with freed tool_results replaced by placeholders (except recalled)."""
+    from neoagent.session import FreedToolResult
+    out: list[Message] = []
+    for msg in messages:
+        if not isinstance(msg.content, list):
+            out.append(msg)
+            continue
+        new_blocks = []
+        changed = False
+        for block in msg.content:
+            if (
+                isinstance(block, ToolResultBlock)
+                and block.tool_use_id in freed
+                and block.tool_use_id not in recalled
+            ):
+                info: FreedToolResult = freed[block.tool_use_id]
+                placeholder = (
+                    f"[freed: tool_use_id={info.id}, tool={info.tool_name}, "
+                    f"size={info.size}B, preview={info.preview!r}]"
+                )
+                new_blocks.append(ToolResultBlock(
+                    tool_use_id=block.tool_use_id,
+                    content=placeholder,
+                    is_error=block.is_error,
+                ))
+                changed = True
+            else:
+                new_blocks.append(block)
+        if changed:
+            out.append(Message(role=msg.role, content=new_blocks))
+        else:
+            out.append(msg)
+    return out
+
+
+def _render_freed_section(freed: "dict[str, object]") -> str:
+    if not freed:
+        return ""
+    from neoagent.session import FreedToolResult
+    lines = ["## Freed Tool Results (recoverable)", ""]
+    for info in freed.values():
+        assert isinstance(info, FreedToolResult)
+        lines.append(f"- `{info.id}` · {info.tool_name} · {info.size}B · {info.preview!r}")
+    lines.append("")
+    lines.append("Call `recall_tool_result(tool_use_id)` to view full content for the current turn.")
+    return "\n".join(lines)

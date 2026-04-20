@@ -105,6 +105,25 @@ class TurnCompleteEvent(Event):
     tool_call_count: int
 
 
+# ── Tool result lifecycle events ──────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class ToolResultFreedEvent(Event):
+    """Emitted when a tool_result is auto-freed (collapsed to placeholder)."""
+    tool_use_id: str
+    tool_name: str
+    size: int
+    preview: str
+    reason: str   # "manual" | "global_compression"
+
+
+@dataclass(frozen=True)
+class ToolResultRecalledEvent(Event):
+    """Emitted when a freed tool_result is recalled for the current turn."""
+    tool_use_id: str
+    tool_name: str
+
+
 # ── Session events ────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -152,6 +171,7 @@ _ALL_EVENT_TYPES = [
     ToolCallEvent, ToolResultEvent,
     CompressCheckEvent, CompressDoneEvent, CompressFallbackEvent,
     MemoryExtractEvent, SkillChangeEvent, TurnCompleteEvent,
+    ToolResultFreedEvent, ToolResultRecalledEvent,
     WorkerEvent, TaskDispatchEvent, TaskCompleteEvent,
     SessionResumeWarningEvent,
 ]
