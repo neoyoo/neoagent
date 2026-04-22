@@ -144,3 +144,190 @@ def test_subscribe_all_receives_all_event_types():
     assert "ToolCallEvent" in received_types
     assert "ToolResultEvent" in received_types
     assert "TurnCompleteEvent" in received_types
+
+
+# ── v2 Events: construction + EventBus round-trip ────────────────────────────
+
+class TestMessageCreatedEvent:
+    def test_construct(self):
+        from neoagent.events import MessageCreatedEvent
+        e = MessageCreatedEvent(
+            session_id="s1",
+            msg_id="m5",
+            turn=2,
+            role="user",
+            source_type="user_input",
+            content=[{"type": "text", "text": "hello"}],
+        )
+        assert e.session_id == "s1"
+        assert e.msg_id == "m5"
+        assert e.turn == 2
+        assert e.role == "user"
+        assert e.source_type == "user_input"
+        assert e.content == [{"type": "text", "text": "hello"}]
+
+    def test_source_type_variants(self):
+        from neoagent.events import MessageCreatedEvent
+        for st in ("user_input", "assistant_reply", "tool_result",
+                   "system_injected_compression", "system_injected_memory",
+                   "system_injected_recall"):
+            e = MessageCreatedEvent(session_id="s1", msg_id="m1", turn=0,
+                                    role="user", source_type=st, content=[])
+            assert e.source_type == st
+
+    def test_eventbus_roundtrip(self):
+        from neoagent.events import MessageCreatedEvent
+        bus = EventBus()
+        received = []
+        bus.subscribe(MessageCreatedEvent, lambda e: received.append(e))
+        ev = MessageCreatedEvent(session_id="s1", msg_id="m1", turn=0,
+                                 role="assistant", source_type="assistant_reply", content=[])
+        bus.emit(ev)
+        assert len(received) == 1
+        assert received[0] is ev
+
+    def test_is_frozen(self):
+        from neoagent.events import MessageCreatedEvent
+        e = MessageCreatedEvent(session_id="s1", msg_id="m1", turn=0,
+                                role="user", source_type="user_input", content=[])
+        with pytest.raises((AttributeError, TypeError)):
+            e.session_id = "other"  # type: ignore
+
+
+class TestToolResultPersistedEvent:
+    def test_construct(self):
+        from neoagent.events import ToolResultPersistedEvent
+        e = ToolResultPersistedEvent(
+            session_id="s1",
+            tool_use_id="tu1",
+            turn=3,
+            tool_name="bash",
+            output="ok",
+            size_bytes=2,
+            is_error=False,
+        )
+        assert e.session_id == "s1"
+        assert e.tool_use_id == "tu1"
+        assert e.turn == 3
+        assert e.tool_name == "bash"
+        assert e.output == "ok"
+        assert e.size_bytes == 2
+        assert e.is_error is False
+
+    def test_eventbus_roundtrip(self):
+        from neoagent.events import ToolResultPersistedEvent
+        bus = EventBus()
+        received = []
+        bus.subscribe(ToolResultPersistedEvent, lambda e: received.append(e))
+        ev = ToolResultPersistedEvent(session_id="s1", tool_use_id="tu1", turn=0,
+                                      tool_name="bash", output="out", size_bytes=3, is_error=False)
+        bus.emit(ev)
+        assert len(received) == 1
+
+    def test_is_frozen(self):
+        from neoagent.events import ToolResultPersistedEvent
+        e = ToolResultPersistedEvent(session_id="s1", tool_use_id="tu1", turn=0,
+                                     tool_name="bash", output="out", size_bytes=3, is_error=False)
+        with pytest.raises((AttributeError, TypeError)):
+            e.session_id = "x"  # type: ignore
+
+
+class TestBatchCreatedEvent:
+    def test_construct(self):
+        from neoagent.events import BatchCreatedEvent
+        from neoagent.v2.schema import BatchMember
+        members = [BatchMember(id="m1", role="user", preview="hello")]
+        e = BatchCreatedEvent(
+            session_id="s1",
+            batch_id="cm_1",
+            turns_from=0,
+            turns_to=5,
+            summary="batch summary",
+            members=members,
+        )
+        assert e.session_id == "s1"
+        assert e.batch_id == "cm_1"
+        assert e.turns_from == 0
+        assert e.turns_to == 5
+        assert e.summary == "batch summary"
+        assert len(e.members) == 1
+
+    def test_eventbus_roundtrip(self):
+        from neoagent.events import BatchCreatedEvent
+        bus = EventBus()
+        received = []
+        bus.subscribe(BatchCreatedEvent, lambda e: received.append(e))
+        ev = BatchCreatedEvent(session_id="s1", batch_id="cm_1", turns_from=0,
+                               turns_to=3, summary="s", members=[])
+        bus.emit(ev)
+        assert len(received) == 1
+
+    def test_is_frozen(self):
+        from neoagent.events import BatchCreatedEvent
+        e = BatchCreatedEvent(session_id="s1", batch_id="cm_1", turns_from=0,
+                              turns_to=3, summary="s", members=[])
+        with pytest.raises((AttributeError, TypeError)):
+            e.session_id = "x"  # type: ignore
+
+
+class TestWorkingMemoryUpdatedEvent:
+    def test_construct(self):
+        from neoagent.events import WorkingMemoryUpdatedEvent
+        e = WorkingMemoryUpdatedEvent(
+            session_id="s1",
+            version=2,
+            at_turn=4,
+            wm_json={"goal": "explore"},
+            updated_by="llm_tool",
+        )
+        assert e.session_id == "s1"
+        assert e.version == 2
+        assert e.at_turn == 4
+        assert e.wm_json == {"goal": "explore"}
+        assert e.updated_by == "llm_tool"
+
+    def test_eventbus_roundtrip(self):
+        from neoagent.events import WorkingMemoryUpdatedEvent
+        bus = EventBus()
+        received = []
+        bus.subscribe(WorkingMemoryUpdatedEvent, lambda e: received.append(e))
+        ev = WorkingMemoryUpdatedEvent(session_id="s1", version=1, at_turn=0,
+                                       wm_json={}, updated_by="framework_init")
+        bus.emit(ev)
+        assert len(received) == 1
+
+    def test_is_frozen(self):
+        from neoagent.events import WorkingMemoryUpdatedEvent
+        e = WorkingMemoryUpdatedEvent(session_id="s1", version=1, at_turn=0,
+                                      wm_json={}, updated_by="framework_init")
+        with pytest.raises((AttributeError, TypeError)):
+            e.session_id = "x"  # type: ignore
+
+
+class TestCompressionFailedEvent:
+    def test_construct(self):
+        from neoagent.events import CompressionFailedEvent
+        e = CompressionFailedEvent(
+            session_id="s1",
+            reason="invalid json",
+            retry_count=3,
+        )
+        assert e.session_id == "s1"
+        assert e.reason == "invalid json"
+        assert e.retry_count == 3
+
+    def test_eventbus_roundtrip(self):
+        from neoagent.events import CompressionFailedEvent
+        bus = EventBus()
+        received = []
+        bus.subscribe(CompressionFailedEvent, lambda e: received.append(e))
+        ev = CompressionFailedEvent(session_id="s1", reason="timeout", retry_count=3)
+        bus.emit(ev)
+        assert len(received) == 1
+        assert received[0].reason == "timeout"
+
+    def test_is_frozen(self):
+        from neoagent.events import CompressionFailedEvent
+        e = CompressionFailedEvent(session_id="s1", reason="x", retry_count=0)
+        with pytest.raises((AttributeError, TypeError)):
+            e.session_id = "y"  # type: ignore

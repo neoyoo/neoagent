@@ -74,3 +74,30 @@ class TestBaseTool:
         assert isinstance(result, ToolResult)
         assert result.output == "7"
         assert result.is_error is False
+
+    def test_returns_external_content_default_is_false(self):
+        tool = AddTool()
+        assert tool.returns_external_content is False
+
+    def test_returns_external_content_can_be_overridden(self):
+        class ExternalTool(BaseTool):
+            name: str = "external"
+            description: str = "External content tool"
+            input_model: type[BaseModel] = AddInput
+            returns_external_content: bool = True
+
+            async def execute(self, input: BaseModel) -> ToolResult:
+                return ToolResult(call_id="x", output="data")
+
+        assert ExternalTool().returns_external_content is True
+
+    def test_returns_external_content_default_not_inherited_as_true(self):
+        class NormalTool(BaseTool):
+            name: str = "normal"
+            description: str = "Normal tool"
+            input_model: type[BaseModel] = AddInput
+
+            async def execute(self, input: BaseModel) -> ToolResult:
+                return ToolResult(call_id="x", output="ok")
+
+        assert NormalTool().returns_external_content is False

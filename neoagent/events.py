@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 from dataclasses import dataclass
-from typing import Callable, TypeVar
+from typing import Callable, Literal, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +164,70 @@ class TaskCompleteEvent(Event):
     usage: "TokenUsage | None"
 
 
+# ── v2 Events ─────────────────────────────────────────────────────────────────
+# spec § 8.3, lines 1343-1392; § 10.3a (CompressionFailedEvent)
+# BatchMember imported lazily via TYPE_CHECKING to avoid circular imports at
+# module level; the field type is annotated as `list` per C3 contract.
+
+@dataclass(frozen=True)
+class MessageCreatedEvent(Event):
+    """spec § 8.3, lines 1343-1392"""
+    session_id: str
+    msg_id: str
+    turn: int
+    role: str
+    source_type: Literal[
+        "user_input",
+        "assistant_reply",
+        "tool_result",
+        "system_injected_compression",
+        "system_injected_memory",
+        "system_injected_recall",
+    ]
+    content: list
+
+
+@dataclass(frozen=True)
+class ToolResultPersistedEvent(Event):
+    """spec § 8.3, lines 1343-1392"""
+    session_id: str
+    tool_use_id: str
+    turn: int
+    tool_name: str
+    output: str
+    size_bytes: int
+    is_error: bool
+
+
+@dataclass(frozen=True)
+class BatchCreatedEvent(Event):
+    """spec § 8.3, lines 1343-1392"""
+    session_id: str
+    batch_id: str
+    turns_from: int
+    turns_to: int
+    summary: str
+    members: list  # list[BatchMember] — from neoagent.v2.schema
+
+
+@dataclass(frozen=True)
+class WorkingMemoryUpdatedEvent(Event):
+    """spec § 8.3, lines 1343-1392"""
+    session_id: str
+    version: int
+    at_turn: int
+    wm_json: dict
+    updated_by: str
+
+
+@dataclass(frozen=True)
+class CompressionFailedEvent(Event):
+    """spec § 10.3a — fallback strategy a"""
+    session_id: str
+    reason: str
+    retry_count: int
+
+
 # ── EventBus ──────────────────────────────────────────────────────────────────
 
 _ALL_EVENT_TYPES = [
@@ -174,6 +238,9 @@ _ALL_EVENT_TYPES = [
     ToolResultFreedEvent, ToolResultRecalledEvent,
     WorkerEvent, TaskDispatchEvent, TaskCompleteEvent,
     SessionResumeWarningEvent,
+    # v2 events
+    MessageCreatedEvent, ToolResultPersistedEvent, BatchCreatedEvent,
+    WorkingMemoryUpdatedEvent, CompressionFailedEvent,
 ]
 
 

@@ -11,6 +11,7 @@ class BaseTool(ABC):
     input_model: type[BaseModel]
     permission: Literal["auto", "ask", "deny"] = "ask"
     is_concurrent_safe: bool = False
+    returns_external_content: bool = False    # spec § 18.2 — external source auto-wrapped in <source> by QueryLoop
 
     @abstractmethod
     async def execute(self, input: BaseModel) -> ToolResult: ...
