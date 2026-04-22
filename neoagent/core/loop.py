@@ -6,6 +6,7 @@ from neoagent.events import (
     EventBus,
     CompressCheckEvent, CompressDoneEvent, CompressFallbackEvent,
     MemoryExtractEvent,
+    MessageCreatedEvent, ToolResultPersistedEvent,
     ProviderRequestEvent, ProviderResponseEvent,
     TurnCompleteEvent,
     # NOTE: SkillChangeEvent is defined but not yet wired; PromptBuilder needs EventBus access (planned for future).
@@ -18,7 +19,7 @@ if TYPE_CHECKING:
     from neoagent.hooks import HookManager
     from neoagent.tools.deferred import DeferredToolRegistry
 
-from neoagent.core.prompt import PromptBuilder
+from neoagent.core.prompt import PromptBuilder, PromptSection
 from neoagent.core.types import ConversationResult, Message, TextBlock, ToolCall, ToolResult, ToolResultBlock, Turn
 from neoagent.providers.base import Provider, Response
 from neoagent.tools.registry import ToolRegistry
@@ -119,7 +120,12 @@ class QueryLoop:
                         summary=session_state.previous_summary,
                         previous_summary=old_summary,
                     ))
-            system = self._prompt_builder.build()
+
+            # Task 4.3: Inject per-turn dynamic sections via add_section (no raw string concat bypass).
+            # Sections are added before build() and removed in try/finally to prevent accumulation.
+            # priority=-100 ensures they sort after all regular sections (appear at the end).
+            _deferred_injected = False
+            _freed_injected = False
 
             # MCP deferred loading: filter schemas + inject deferred names into system prompt.
             # A tool managed by the deferred registry is hidden until promoted.
@@ -147,12 +153,15 @@ class QueryLoop:
                     if _is_hidden(name)
                 )
                 if deferred_names:
-                    deferred_section = (
-                        "\n\n<deferred-tools>\n"
+                    deferred_section_content = (
+                        "<deferred-tools>\n"
                         + "\n".join(deferred_names)
                         + "\n</deferred-tools>"
                     )
-                    system = system + deferred_section
+                    self._prompt_builder.add_section(
+                        PromptSection(name="_deferred", content=deferred_section_content, priority=-100, is_static=False)
+                    )
+                    _deferred_injected = True
 
             # Apply freed-tool rewriting before sending to provider (non-mutating).
             if session_state and session_state.freed_tool_results:
@@ -161,11 +170,23 @@ class QueryLoop:
                     session_state.freed_tool_results,
                     session_state.recalled_this_turn,
                 )
-                freed_section = _render_freed_section(session_state.freed_tool_results)
-                if freed_section:
-                    system = system + "\n\n" + freed_section
+                freed_section_content = _render_freed_section(session_state.freed_tool_results)
+                if freed_section_content:
+                    self._prompt_builder.add_section(
+                        PromptSection(name="_freed", content=freed_section_content, priority=-100, is_static=False)
+                    )
+                    _freed_injected = True
             else:
                 msgs_for_llm = msgs
+
+            try:
+                system = self._prompt_builder.build()
+            finally:
+                # Always clean up per-turn sections regardless of success/failure
+                if _deferred_injected:
+                    self._prompt_builder.remove_section("_deferred")
+                if _freed_injected:
+                    self._prompt_builder.remove_section("_freed")
 
             self._bus.emit(ProviderRequestEvent(
                 system=system, messages=tuple(msgs_for_llm),
@@ -252,6 +273,16 @@ class QueryLoop:
                         token_delta=token_delta,
                         items_stored=items_stored,
                     ))
+                # Task 4.4: Emit MessageCreatedEvent for assistant_reply (end_turn path)
+                if session_state:
+                    self._bus.emit(MessageCreatedEvent(
+                        session_id=_session.id,
+                        msg_id=session_state.id_gen.next_msg_id(),
+                        turn=turn_idx,
+                        role="assistant",
+                        source_type="assistant_reply",
+                        content=list(response.content),
+                    ))
                 msgs.append(Message(role="assistant", content=response.content))
                 if session_state:
                     session_state.recalled_this_turn.clear()
@@ -266,13 +297,46 @@ class QueryLoop:
             if self._memory_manager:
                 self._memory_manager.record_tool_calls(len(tool_calls), session_state=session_state)
             assistant_msg = Message(role="assistant", content=response.content)
+            # Task 4.4: Emit MessageCreatedEvent for assistant_reply (tool_use path)
+            if session_state:
+                self._bus.emit(MessageCreatedEvent(
+                    session_id=_session.id,
+                    msg_id=session_state.id_gen.next_msg_id(),
+                    turn=turn_idx,
+                    role="assistant",
+                    source_type="assistant_reply",
+                    content=list(response.content),
+                ))
             msgs.append(assistant_msg)
-            result_msg = Message(role="user", content=[ToolResultBlock(tool_use_id=r.call_id, content=r.output, is_error=r.is_error) for r in results])
+            tool_result_blocks = [ToolResultBlock(tool_use_id=r.call_id, content=r.output, is_error=r.is_error) for r in results]
+            result_msg = Message(role="user", content=tool_result_blocks)
             msgs.append(result_msg)
-            # Record tool_use_id → tool_name mapping (used by free_tool_result tool).
+            # Record tool_use_id → tool_name mapping (used by free_tool_result tool and events).
+            # Must be populated before emitting ToolResultPersistedEvent.
             if session_state:
                 for call in tool_calls:
                     session_state.tool_use_to_tool_name[call.id] = call.name
+            # Task 4.4: Emit MessageCreatedEvent (tool_result) + ToolResultPersistedEvent for each result
+            if session_state:
+                self._bus.emit(MessageCreatedEvent(
+                    session_id=_session.id,
+                    msg_id=session_state.id_gen.next_msg_id(),
+                    turn=turn_idx,
+                    role="user",
+                    source_type="tool_result",
+                    content=list(tool_result_blocks),
+                ))
+                for r in results:
+                    tool_name_for_event = session_state.tool_use_to_tool_name.get(r.call_id, r.call_id)
+                    self._bus.emit(ToolResultPersistedEvent(
+                        session_id=_session.id,
+                        tool_use_id=r.call_id,
+                        turn=turn_idx,
+                        tool_name=tool_name_for_event,
+                        output=r.output,
+                        size_bytes=len(r.output.encode("utf-8")),
+                        is_error=r.is_error,
+                    ))
             turn = Turn(response=assistant_msg, tool_calls=tool_calls, tool_results=results, stop_reason="tool_use")
             turns.append(turn)
             self._bus.emit(TurnCompleteEvent(
