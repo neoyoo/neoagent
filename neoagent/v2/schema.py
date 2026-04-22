@@ -44,8 +44,8 @@ class BatchMember:
 class CompressionDelta:
     """spec § 10.2, lines 1604-1630"""
     batch_summary: str                          # 7-section structured text
-    batch_members: list[BatchMember] = field(default_factory=list)
-    working_memory_delta: list[dict] = field(default_factory=list)   # [{field, op, value, item_id?}]
+    batch_members: list[BatchMember]
+    working_memory_delta: list[dict]            # [{field, op, value, item_id?}]
 
 
 @dataclass
@@ -68,9 +68,9 @@ class Batch:
     time_from: datetime
     time_to: datetime
     summary: str
-    members: list[BatchMember] = field(default_factory=list)
-    trigger: str = ""
-    created_at: datetime = field(default_factory=datetime.now)
+    members: list[BatchMember]
+    trigger: str
+    created_at: datetime
 
 
 @dataclass

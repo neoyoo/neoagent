@@ -87,7 +87,7 @@ class TestBatchMember:
 # ── CompressionDelta ──────────────────────────────────────────────────────────
 
 class TestCompressionDelta:
-    def test_construct_with_defaults(self):
+    def test_construct_all_required_fields(self):
         from neoagent.v2.schema import CompressionDelta, BatchMember
         cd = CompressionDelta(
             batch_summary="7-section structured text",
@@ -99,14 +99,14 @@ class TestCompressionDelta:
         assert cd.batch_members[0].id == "m1"
         assert len(cd.working_memory_delta) == 1
 
-    def test_batch_members_default_factory(self):
+    def test_batch_members_required_and_independent(self):
         from neoagent.v2.schema import CompressionDelta
         cd1 = CompressionDelta(batch_summary="s", batch_members=[], working_memory_delta=[])
         cd2 = CompressionDelta(batch_summary="s", batch_members=[], working_memory_delta=[])
         cd1.batch_members.append("x")  # type: ignore
         assert cd2.batch_members == []
 
-    def test_working_memory_delta_default_factory(self):
+    def test_working_memory_delta_required_and_independent(self):
         from neoagent.v2.schema import CompressionDelta
         cd1 = CompressionDelta(batch_summary="s", batch_members=[], working_memory_delta=[])
         cd2 = CompressionDelta(batch_summary="s", batch_members=[], working_memory_delta=[])
@@ -177,7 +177,7 @@ class TestBatch:
         assert batch.turns_to == 5
         assert len(batch.members) == 1
 
-    def test_members_list_default_factory(self):
+    def test_members_required_and_independent(self):
         from neoagent.v2.schema import Batch
         now = datetime(2026, 4, 22)
         b1 = Batch(session_id="s1", batch_id="cm_1", turns_from=0, turns_to=1,
