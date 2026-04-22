@@ -9,6 +9,7 @@ from neoagent.events import (
     MessageCreatedEvent, ToolResultPersistedEvent,
     ProviderRequestEvent, ProviderResponseEvent,
     TurnCompleteEvent,
+    WorkingMemoryUpdatedEvent,
     # NOTE: SkillChangeEvent is defined but not yet wired; PromptBuilder needs EventBus access (planned for future).
 )
 
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
     from neoagent.tools.executor import ToolExecutor
     from neoagent.hooks import HookManager
     from neoagent.tools.deferred import DeferredToolRegistry
+    from neoagent.v2.abc import WorkingMemoryStore
 
 from neoagent.core.prompt import PromptBuilder, PromptSection
 from neoagent.core.types import ConversationResult, Message, TextBlock, ToolCall, ToolResult, ToolResultBlock, Turn
@@ -34,7 +36,8 @@ class QueryLoop:
                  event_bus: EventBus | None = None,
                  tool_executor: "ToolExecutor | None" = None,
                  hook_manager: "HookManager | None" = None,
-                 deferred_registry: "DeferredToolRegistry | None" = None):
+                 deferred_registry: "DeferredToolRegistry | None" = None,
+                 wm_store: "WorkingMemoryStore | None" = None):
         self._provider = provider
         self._registry = tool_registry
         self._executor = tool_executor
@@ -46,6 +49,7 @@ class QueryLoop:
         self._bus = event_bus if event_bus is not None else EventBus()
         self._hook_manager = hook_manager
         self._deferred_registry = deferred_registry
+        self._wm_store = wm_store
 
     async def run(
         self,
@@ -253,6 +257,23 @@ class QueryLoop:
             if response.stop_reason == "end_turn" or not tool_calls:
                 turn = Turn(response=Message(role="assistant", content=response.content), tool_calls=[], tool_results=[], stop_reason="end_turn")
                 turns.append(turn)
+                # Task 4.5: Snapshot _current_wm + emit WorkingMemoryUpdatedEvent
+                # BEFORE TurnCompleteEvent (WM snapshot is a turn-ending side-effect).
+                if (
+                    self._wm_store is not None
+                    and session_state is not None
+                    and session_state._current_wm is not None
+                ):
+                    _wm = session_state._current_wm
+                    await self._wm_store.save(_session.id, _wm)
+                    from neoagent.session import _wm_to_dict
+                    self._bus.emit(WorkingMemoryUpdatedEvent(
+                        session_id=_session.id,
+                        version=_wm.version,
+                        at_turn=_wm.at_turn,
+                        wm_json=_wm_to_dict(_wm),
+                        updated_by=_wm.updated_by,
+                    ))
                 self._bus.emit(TurnCompleteEvent(
                     turn_index=turn_idx,
                     stop_reason=turn.stop_reason,
