@@ -2,6 +2,7 @@ from __future__ import annotations
 import os
 import re
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 from neoagent.config import NeoAgentConfig
 from neoagent.core.loop import QueryLoop
 from neoagent.core.prompt import PromptBuilder, PromptSection
@@ -19,6 +20,9 @@ from neoagent.tools.builtin.tool_search import ToolSearchTool
 from neoagent.mcp.transport import StdioTransport
 from neoagent.mcp.client import MCPClient
 from neoagent.mcp.tool import create_mcp_tools
+
+if TYPE_CHECKING:
+    from neoagent.v2.abc import WorkingMemoryStore
 
 
 def _create_provider(config: NeoAgentConfig) -> Provider:
@@ -53,6 +57,22 @@ class NeoAgent:
             content=config.system_prompt or "You are neoagent, a helpful AI assistant.",
             priority=0, is_static=True,
         ))
+
+        # ── v2: WorkingMemoryStore ────────────────────────────────────────────
+        if config.wm_store is None:
+            from neoagent.v2.stores import InMemoryWorkingMemoryStore
+            self._wm_store: "WorkingMemoryStore" = InMemoryWorkingMemoryStore()
+        else:
+            self._wm_store = config.wm_store
+
+        # ── v2: ContextCompressor with strategy + event_bus ──────────────────
+        from neoagent.core.compress import ContextCompressor
+        self._compressor = ContextCompressor(
+            provider=self._provider,
+            strategy=config.compression_strategy,
+            event_bus=self._event_bus,
+        )
+
         self._loop = QueryLoop(
             provider=self._provider,
             tool_registry=self._registry,
@@ -63,7 +83,33 @@ class NeoAgent:
             event_bus=self._event_bus,
             hook_manager=self._hook_manager,
             deferred_registry=self._deferred_registry,
+            wm_store=self._wm_store,
         )
+        # Replace the compressor created internally by QueryLoop so that
+        # strategy and event_bus are forwarded (QueryLoop creates its own compressor
+        # without these fields; we override it here).
+        self._loop._compressor = self._compressor
+
+        # ── v2: source_wrap_hook registration ────────────────────────────────
+        if config.enable_source_wrap:
+            from neoagent.v2.security.source_wrap import source_wrap_hook
+            self.hook("post_tool_call", source_wrap_hook)
+
+        # ── v2: Security prompt blocks ────────────────────────────────────────
+        if config.enable_security_prompt_blocks:
+            from neoagent.v2.prompts.security_blocks import build_security_sections
+            for sec in build_security_sections(priority=0):
+                self._prompt_builder.add_section(PromptSection(
+                    name=f"v2_security_{sec.name}",
+                    content=sec.content,
+                    priority=sec.priority,
+                    is_static=sec.is_static,
+                ))
+
+        # ── v2: Store memory_provider / memory_review_strategy for Phase 7.2/7.3
+        self._memory_provider = config.memory_provider
+        self._memory_review_strategy = config.memory_review_strategy
+
         self._observer = None
         self._observer_subscriber = None
         # Storage: explicit > config.session_dir > None
@@ -78,6 +124,11 @@ class NeoAgent:
     def event_bus(self) -> EventBus:
         """Expose EventBus for external subscribers."""
         return self._event_bus
+
+    @property
+    def wm_store(self) -> "WorkingMemoryStore":
+        """Expose the WorkingMemoryStore for inspection and external use."""
+        return self._wm_store
 
     def register_tool(self, tool: BaseTool) -> None:
         self._registry.register(tool)

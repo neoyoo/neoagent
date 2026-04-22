@@ -1,7 +1,15 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from neoagent.v2.abc import (
+        CompressionStrategy,
+        MemoryProvider,
+        MemoryReviewStrategy,
+        WorkingMemoryStore,
+    )
 
 @dataclass
 class NeoAgentConfig:
@@ -17,6 +25,15 @@ class NeoAgentConfig:
     memory_project_key: str | None = None
     session_dir: Path | None = None
     system_prompt: str | None = None
+
+    # ── v2 optional injections ────────────────────────────────────────────────
+    # All Optional; default None/True — does not break existing construction paths.
+    wm_store: "WorkingMemoryStore | None" = field(default=None)
+    compression_strategy: "CompressionStrategy | None" = field(default=None)
+    memory_review_strategy: "MemoryReviewStrategy | None" = field(default=None)
+    memory_provider: "MemoryProvider | None" = field(default=None)
+    enable_source_wrap: bool = True
+    enable_security_prompt_blocks: bool = True
 
     def __repr__(self) -> str:
         fields = []
