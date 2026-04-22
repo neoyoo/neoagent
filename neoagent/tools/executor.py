@@ -30,12 +30,14 @@ class ToolExecutor:
         max_result_size: int = 50000,
         event_bus: "EventBus | None" = None,
         hook_manager: "HookManager | None" = None,
+        enable_source_wrap: bool = False,
     ) -> None:
         self._registry = registry
         self._permission = permission_checker or PermissionChecker()
         self.max_result_size = max_result_size
         self._bus = event_bus
         self._hook_manager = hook_manager
+        self._enable_source_wrap = enable_source_wrap
 
     async def execute(self, calls: list[ToolCall]) -> list[ToolResult]:
         safe, unsafe = self._partition_by_concurrency(calls)
@@ -127,6 +129,18 @@ class ToolExecutor:
             result.call_id = call.id
             if len(result.output) > self.max_result_size:
                 result.output = result.output[:self.max_result_size] + "\n[truncated]"
+
+            # Inline source wrap: bypass hook event-shape mismatch.
+            # Hook PostToolCallEvent carries (tool_name: str, result: str) but
+            # source_wrap_hook expects (tool: BaseTool, result: ToolResult).
+            # We apply the wrap here where we have the actual tool object.
+            if (
+                self._enable_source_wrap
+                and getattr(tool, "returns_external_content", False)
+                and not result.is_error
+            ):
+                from neoagent.v2.security.source_wrap import wrap_source_content
+                result.output = wrap_source_content(result.output, tool_name=tool.name)
 
             # post_tool_call hook
             if self._hook_manager:

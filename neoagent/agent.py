@@ -54,6 +54,7 @@ class NeoAgent:
             max_result_size=config.max_result_size,
             event_bus=self._event_bus,
             hook_manager=self._hook_manager,
+            enable_source_wrap=config.enable_source_wrap,
         )
         self._prompt_builder = PromptBuilder()
         self._prompt_builder.add_section(PromptSection(
@@ -93,11 +94,6 @@ class NeoAgent:
         # strategy and event_bus are forwarded (QueryLoop creates its own compressor
         # without these fields; we override it here).
         self._loop._compressor = self._compressor
-
-        # ── v2: source_wrap_hook registration ────────────────────────────────
-        if config.enable_source_wrap:
-            from neoagent.v2.security.source_wrap import source_wrap_hook
-            self.hook("post_tool_call", source_wrap_hook)
 
         # ── v2: Security prompt blocks ────────────────────────────────────────
         if config.enable_security_prompt_blocks:

@@ -253,7 +253,6 @@ class TestSourceWrapE2EChain:
     """E2E: NeoAgent + real ToolExecutor + source_wrap_hook registration."""
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(strict=False, reason=_BUG_REASON)
     async def test_8_5_1_e2e_source_wrap_external_tool(self):
         """8.5.1 E2E: external tool output is wrapped when enable_source_wrap=True."""
         responses = [
@@ -264,8 +263,10 @@ class TestSourceWrapE2EChain:
         agent = _make_agent(provider, extra_tools=[MockExternalTool()], enable_source_wrap=True)
 
         session = agent.new_session()
-        session.messages.append(Message(role="user", content="fetch me something"))
-        result = await agent.run(session.messages, session=session)
+        result = await agent.run(
+            [Message(role="user", content="fetch me something")],
+            session=session,
+        )
 
         # The last tool_use turn should have the wrapped output in messages
         all_tool_results = []
@@ -278,7 +279,6 @@ class TestSourceWrapE2EChain:
         assert '<source type="mock_external_fetch">' in wrapped_output
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(strict=False, reason=_BUG_REASON)
     async def test_8_5_2_e2e_internal_tool_not_wrapped(self):
         """8.5.2 E2E: internal tool output is NOT wrapped (returns_external_content=False)."""
         responses = [
@@ -289,8 +289,10 @@ class TestSourceWrapE2EChain:
         agent = _make_agent(provider, extra_tools=[MockInternalTool()], enable_source_wrap=True)
 
         session = agent.new_session()
-        session.messages.append(Message(role="user", content="do internal thing"))
-        result = await agent.run(session.messages, session=session)
+        result = await agent.run(
+            [Message(role="user", content="do internal thing")],
+            session=session,
+        )
 
         all_tool_results = []
         for turn in result.turns:
@@ -303,7 +305,6 @@ class TestSourceWrapE2EChain:
         assert output == "这是网页内容"
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(strict=False, reason=_BUG_REASON)
     async def test_8_5_3_e2e_disable_source_wrap(self):
         """8.5.3 E2E: enable_source_wrap=False → external tool output NOT wrapped."""
         responses = [
@@ -318,8 +319,10 @@ class TestSourceWrapE2EChain:
         )
 
         session = agent.new_session()
-        session.messages.append(Message(role="user", content="fetch me something"))
-        result = await agent.run(session.messages, session=session)
+        result = await agent.run(
+            [Message(role="user", content="fetch me something")],
+            session=session,
+        )
 
         all_tool_results = []
         for turn in result.turns:
@@ -332,7 +335,6 @@ class TestSourceWrapE2EChain:
         assert output == "这是网页内容"
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(strict=False, reason=_BUG_REASON)
     async def test_8_5_4_e2e_error_result_not_wrapped(self):
         """8.5.4 E2E: is_error=True → output not wrapped even for external tool."""
         responses = [
@@ -343,8 +345,10 @@ class TestSourceWrapE2EChain:
         agent = _make_agent(provider, extra_tools=[MockErrorTool()], enable_source_wrap=True)
 
         session = agent.new_session()
-        session.messages.append(Message(role="user", content="fetch me something"))
-        result = await agent.run(session.messages, session=session)
+        result = await agent.run(
+            [Message(role="user", content="fetch me something")],
+            session=session,
+        )
 
         all_tool_results = []
         for turn in result.turns:
@@ -358,30 +362,22 @@ class TestSourceWrapE2EChain:
 
 
 class TestSourceWrapE2EDisabledVerification:
-    """E2E tests that can pass: verify enable_source_wrap=False does NOT register the hook."""
+    """E2E tests: verify enable_source_wrap flag is propagated to the executor.
 
-    def test_8_5_3_disable_source_wrap_no_hook_registered(self):
-        """8.5.3: enable_source_wrap=False → source_wrap_hook NOT in post_tool_call hooks."""
-        from neoagent.v2.security.source_wrap import source_wrap_hook
+    Source wrapping is now applied inline in ToolExecutor (not via hook), so
+    we verify the executor's _enable_source_wrap flag instead of hook registration.
+    """
 
+    def test_8_5_3_disable_source_wrap_executor_flag_off(self):
+        """8.5.3: enable_source_wrap=False → executor._enable_source_wrap is False."""
         provider = MockProvider([])
         agent = _make_agent(provider, enable_source_wrap=False)
 
-        handlers = [
-            entry.handler
-            for entry in agent._hook_manager._hooks.get("post_tool_call", [])
-        ]
-        assert source_wrap_hook not in handlers
+        assert agent._executor._enable_source_wrap is False
 
-    def test_8_5_1_enable_source_wrap_hook_registered(self):
-        """8.5.1: enable_source_wrap=True (default) → source_wrap_hook IS in post_tool_call hooks."""
-        from neoagent.v2.security.source_wrap import source_wrap_hook
-
+    def test_8_5_1_enable_source_wrap_executor_flag_on(self):
+        """8.5.1: enable_source_wrap=True (default) → executor._enable_source_wrap is True."""
         provider = MockProvider([])
         agent = _make_agent(provider, enable_source_wrap=True)
 
-        handlers = [
-            entry.handler
-            for entry in agent._hook_manager._hooks.get("post_tool_call", [])
-        ]
-        assert source_wrap_hook in handlers
+        assert agent._executor._enable_source_wrap is True

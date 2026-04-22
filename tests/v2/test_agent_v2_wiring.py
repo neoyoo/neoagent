@@ -125,28 +125,20 @@ class TestNeoAgentAssembly:
 
 
 class TestHookRegistration:
-    def test_source_wrap_hook_registered_by_default(self):
-        """C8: With enable_source_wrap=True (default), source_wrap_hook is in post_tool_call."""
-        from neoagent.v2.security.source_wrap import source_wrap_hook
+    def test_source_wrap_executor_flag_enabled_by_default(self):
+        """C8: With enable_source_wrap=True (default), executor._enable_source_wrap is True.
 
+        Source wrapping is applied inline in ToolExecutor (not via hook) to avoid
+        PostToolCallEvent shape mismatch (tool_name:str vs expected tool:BaseTool).
+        """
         agent = _make_agent()
-        handlers = [
-            entry.handler
-            for entry in agent._hook_manager._hooks.get("post_tool_call", [])
-        ]
-        assert source_wrap_hook in handlers
+        assert agent._executor._enable_source_wrap is True
 
-    def test_source_wrap_hook_not_registered_when_disabled(self):
-        """C9: With enable_source_wrap=False, source_wrap_hook is NOT registered."""
-        from neoagent.v2.security.source_wrap import source_wrap_hook
-
+    def test_source_wrap_executor_flag_disabled_when_config_off(self):
+        """C9: With enable_source_wrap=False, executor._enable_source_wrap is False."""
         cfg = _make_config(enable_source_wrap=False)
         agent = _make_agent(cfg)
-        handlers = [
-            entry.handler
-            for entry in agent._hook_manager._hooks.get("post_tool_call", [])
-        ]
-        assert source_wrap_hook not in handlers
+        assert agent._executor._enable_source_wrap is False
 
 
 # ---------------------------------------------------------------------------
