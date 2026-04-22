@@ -1,4 +1,6 @@
 from __future__ import annotations
+import asyncio
+import logging
 import os
 import re
 from datetime import datetime, timedelta
@@ -7,7 +9,7 @@ from neoagent.config import NeoAgentConfig
 from neoagent.core.loop import QueryLoop
 from neoagent.core.prompt import PromptBuilder, PromptSection
 from neoagent.core.types import ConversationResult, Message, TextBlock
-from neoagent.events import EventBus, SessionResumeWarningEvent
+from neoagent.events import EventBus, SessionResumeWarningEvent, TurnCompleteEvent
 from neoagent.hooks import HookManager, HookType, HookHandler
 from neoagent.providers.base import Provider
 from neoagent.session import JsonFileStorage, Session, SessionStorage
@@ -23,6 +25,8 @@ from neoagent.mcp.tool import create_mcp_tools
 
 if TYPE_CHECKING:
     from neoagent.v2.abc import WorkingMemoryStore
+
+logger = logging.getLogger(__name__)
 
 
 def _create_provider(config: NeoAgentConfig) -> Provider:
@@ -110,6 +114,12 @@ class NeoAgent:
         self._memory_provider = config.memory_provider
         self._memory_review_strategy = config.memory_review_strategy
 
+        # Tracks the active session during chat()/run() for NudgeCounter.
+        self._current_session: Session | None = None
+
+        # ── Task 7.2: Subscribe to TurnCompleteEvent → NudgeCounter tick / review
+        self._event_bus.subscribe(TurnCompleteEvent, self._on_turn_complete_sync)
+
         self._observer = None
         self._observer_subscriber = None
         # Storage: explicit > config.session_dir > None
@@ -119,6 +129,42 @@ class NeoAgent:
             self._storage = JsonFileStorage(config.session_dir)
         else:
             self._storage = None
+
+    # ── Task 7.2: NudgeCounter + MemoryReview on TurnCompleteEvent ───────────
+
+    def _on_turn_complete_sync(self, event: TurnCompleteEvent) -> None:
+        """Sync EventBus handler: tick nudge_counter; fire async review as a task."""
+        session = self._current_session
+        if session is None:
+            return
+        nudge = session.state.nudge_counter
+        nudge.tick()
+        if not nudge.should_trigger_review():
+            return
+        if self._memory_review_strategy is None or self._memory_provider is None:
+            return
+        # Schedule async work without blocking the sync EventBus.
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._on_turn_complete_async(session))
+        except RuntimeError:
+            # No running event loop — skip (test or non-async context)
+            pass
+
+    async def _on_turn_complete_async(self, session: Session) -> None:
+        """Async part: call MemoryReviewStrategy.review() and MemoryProvider.upsert()."""
+        try:
+            wm = session.state._current_wm
+            entries = await self._memory_review_strategy.review(  # type: ignore[union-attr]
+                session_id=session.id,
+                user_id="default",
+                messages=list(session.messages),
+                wm=wm,
+            )
+            if entries:
+                await self._memory_provider.upsert(entries)  # type: ignore[union-attr]
+        except Exception as exc:
+            logger.warning("MemoryReview error (soft failure): %s", exc)
 
     @property
     def event_bus(self) -> EventBus:
@@ -191,7 +237,11 @@ class NeoAgent:
         session.messages.append(Message(role="user", content=message))
         if not _temp and self._storage is not None:
             session.bind_storage(self._storage)
-        result = await self._loop.run(session=session)
+        self._current_session = session
+        try:
+            result = await self._loop.run(session=session)
+        finally:
+            self._current_session = None
         if not _temp and self._storage is not None:
             session.save(self._storage)
         if result.turns:
@@ -222,7 +272,11 @@ class NeoAgent:
             session.messages = list(messages)
         if not _temp and self._storage is not None:
             session.bind_storage(self._storage)
-        result = await self._loop.run(session=session, max_turns=max_turns)
+        self._current_session = session
+        try:
+            result = await self._loop.run(session=session, max_turns=max_turns)
+        finally:
+            self._current_session = None
         if not _temp and self._storage is not None:
             session.save(self._storage)
         return result
@@ -243,7 +297,11 @@ class NeoAgent:
             memory_dir = _Path.home() / ".neoagent" / "memory" / key
 
         store = MemoryStore(memory_dir)
-        memory_manager = MemoryManager(store, self._provider)
+        # Task 7.3: forward memory_provider so MemoryManager can mirror to provider.
+        memory_manager = MemoryManager(
+            store, self._provider,
+            memory_provider=self._memory_provider,
+        )
 
         self._prompt_builder.add_section(PromptSection(
             name="memory",
