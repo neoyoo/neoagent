@@ -76,7 +76,9 @@ def _mock_llm_text(payload: Any) -> MagicMock:
     """Build an AsyncAnthropic-style mock that returns the given payload as JSON text."""
     text = json.dumps(payload, ensure_ascii=False)
     mock_response = MagicMock()
-    mock_response.content = [MagicMock(text=text)]
+    mock_block = MagicMock(text=text)
+    mock_block.type = "text"  # _call_llm now filters by type=="text" to skip thinking blocks
+    mock_response.content = [mock_block]
     return mock_response
 
 
@@ -248,7 +250,8 @@ class TestDegradation:
         valid_payload = [_valid_entry()]
 
         bad_response = MagicMock()
-        bad_response.content = [MagicMock(text="not valid json {{{{")]
+        _bad = MagicMock(text="not valid json {{{{"); _bad.type = "text"
+        bad_response.content = [_bad]
 
         good_response = _mock_llm_text(valid_payload)
 
@@ -281,7 +284,8 @@ class TestDegradation:
         strategy = _make_strategy()
 
         bad_response = MagicMock()
-        bad_response.content = [MagicMock(text="completely invalid json ###")]
+        _bad = MagicMock(text="completely invalid json ###"); _bad.type = "text"
+        bad_response.content = [_bad]
 
         with patch.object(
             strategy._client.messages, "create",
@@ -306,7 +310,8 @@ class TestDegradation:
         strategy = _make_strategy()
 
         dict_response = MagicMock()
-        dict_response.content = [MagicMock(text=json.dumps({"error": "bad output"}))]
+        _d = MagicMock(text=json.dumps({"error": "bad output"})); _d.type = "text"
+        dict_response.content = [_d]
 
         with patch.object(
             strategy._client.messages, "create",

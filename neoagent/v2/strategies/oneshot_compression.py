@@ -156,8 +156,13 @@ class OneShotCompressionStrategy(CompressionStrategy):
             max_tokens=4096,
             messages=[{"role": "user", "content": prompt}],
         )
-        # Extract text from first content block
-        return response.content[0].text
+        # Skip non-text blocks (thinking / redacted_thinking) and return the
+        # first text block's content. Anthropic-protocol providers (e.g. Qwen
+        # via DashScope) may prepend ThinkingBlocks.
+        for block in response.content:
+            if getattr(block, "type", None) == "text":
+                return block.text
+        raise CompressionError("Provider returned no text block in compressor response")
 
     def _validate_and_build(
         self,

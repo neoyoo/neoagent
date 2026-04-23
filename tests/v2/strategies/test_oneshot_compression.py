@@ -82,7 +82,9 @@ def _mock_llm_response(json_payload: Any) -> MagicMock:
     """Build a mock that _call_llm will resolve to the given JSON string."""
     text = json.dumps(json_payload, ensure_ascii=False)
     mock_response = MagicMock()
-    mock_response.content = [MagicMock(text=text)]
+    mock_block = MagicMock(text=text)
+    mock_block.type = "text"  # _call_llm now filters by type=="text" to skip thinking blocks
+    mock_response.content = [mock_block]
     return mock_response
 
 
@@ -271,7 +273,8 @@ class TestJsonParseFailure:
         payload = _valid_delta_json()
 
         bad_response = MagicMock()
-        bad_response.content = [MagicMock(text="not valid json at all {{{{")]
+        _bad = MagicMock(text="not valid json at all {{{{"); _bad.type = "text"
+        bad_response.content = [_bad]
 
         good_response = _mock_llm_response(payload)
 
@@ -299,7 +302,8 @@ class TestJsonParseFailure:
         strategy = _make_strategy()
 
         bad_response = MagicMock()
-        bad_response.content = [MagicMock(text="definitely not json")]
+        _bad = MagicMock(text="definitely not json"); _bad.type = "text"
+        bad_response.content = [_bad]
 
         with patch.object(
             strategy._client.messages, "create",
@@ -418,9 +422,9 @@ class TestEdgeCases:
         incomplete = {"batch_summary": {}, "working_memory_delta": []}
         # Missing batch_members
         bad_response = MagicMock()
-        bad_response.content = [
-            MagicMock(text=json.dumps(incomplete))
-        ]
+        _bad = MagicMock(text=json.dumps(incomplete))
+        _bad.type = "text"
+        bad_response.content = [_bad]
 
         valid_payload = _valid_delta_json()
         good_response = _mock_llm_response(valid_payload)

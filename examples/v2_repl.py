@@ -212,6 +212,21 @@ def _render_flat_llm_view(turn: int, sub_req: int, event: "ProviderRequestEvent"
     return "\n".join(lines)
 
 
+def _render_flat_response_view(event: "ProviderResponseEvent") -> str:
+    """Append block for the provider response that pairs with the preceding request."""
+    lines = [
+        "━━━ RESPONSE " + "━" * 65,
+        f"stop_reason   : {event.stop_reason}",
+        f"input_tokens  : {event.input_tokens}",
+        f"output_tokens : {event.output_tokens}",
+        "",
+    ]
+    body = _render_content_flat(list(event.content))
+    lines.append(body if body else "(empty)")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _wm_to_dict(wm: WorkingMemory | None) -> dict:
     if wm is None:
         return {}
@@ -240,6 +255,7 @@ class SessionLogger:
         self.turn = 0
         self.req_in_turn = 0
         self.event_buffer: list[tuple[str, object]] = []
+        self._pending_txt: Path | None = None
         self.summary_path.write_text(f"# Session {session_id}\n\nStarted {datetime.now().isoformat()}\n")
 
     def start_turn(self, user_input: str) -> None:
@@ -263,9 +279,19 @@ class SessionLogger:
         base.with_suffix(".json").write_text(json.dumps(payload, ensure_ascii=False, indent=2))
         # Human-readable flat view — XML tags (<working_memory> / <source> /
         # <compressed_history> / ...) appear verbatim so they are easy to eyeball.
-        base.with_suffix(".txt").write_text(
-            _render_flat_llm_view(self.turn, self.req_in_turn, event)
-        )
+        txt_path = base.with_suffix(".txt")
+        txt_path.write_text(_render_flat_llm_view(self.turn, self.req_in_turn, event))
+        self._pending_txt = txt_path
+
+    def log_response(self, event: ProviderResponseEvent) -> None:
+        """Append the provider response to the txt of the paired request."""
+        if self._pending_txt is None:
+            return
+        with self._pending_txt.open("a") as f:
+            f.write(_render_flat_response_view(event))
+        self._pending_txt = None
+        # Also record as a buffered event for summary.md + events.jsonl.
+        self.log_event("ProviderResponse", event)
 
     def log_event(self, tag: str, event: object) -> None:
         self.event_buffer.append((tag, event))
@@ -359,7 +385,7 @@ async def main() -> None:
             "- recall_turn: recover compressed turns when you need their detail"
         ),
         max_turns=10,
-        context_budget=3_000,  # small so compression triggers within a few turns
+        context_budget=8_000,  # small-ish: compression triggers after ~5-10 Chinese turns
         compression_strategy=compression_strategy,
         memory_review_strategy=review_strategy,
     )
@@ -440,7 +466,7 @@ async def main() -> None:
     logger = SessionLogger(log_root, session.id)
     bus = agent.event_bus
     bus.subscribe(ProviderRequestEvent, logger.log_request)
-    bus.subscribe(ProviderResponseEvent, lambda e: logger.log_event("ProviderResponse", e))
+    bus.subscribe(ProviderResponseEvent, logger.log_response)
     bus.subscribe(MessageCreatedEvent, lambda e: logger.log_event("MessageCreated", e))
     bus.subscribe(ToolCallEvent, lambda e: logger.log_event("ToolCall", e))
     bus.subscribe(ToolResultPersistedEvent, lambda e: logger.log_event("ToolResultPersisted", e))

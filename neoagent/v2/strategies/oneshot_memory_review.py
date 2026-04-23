@@ -156,7 +156,12 @@ class OneShotMemoryReviewStrategy(MemoryReviewStrategy):
             max_tokens=2048,
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        # Skip non-text blocks (thinking / redacted_thinking); return first text.
+        for block in response.content:
+            if getattr(block, "type", None) == "text":
+                return block.text
+        # Non-critical: memory review degrades silently; return empty JSON list.
+        return "[]"
 
     def _build_entries(
         self,
