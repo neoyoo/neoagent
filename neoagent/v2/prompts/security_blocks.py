@@ -67,6 +67,20 @@ HEURISTIC_GUIDELINES_CONTENT = """<HEURISTIC_GUIDELINES>
    - 默认每轮 assistant 响应调用 update_working_memory **最多一次**。连续多次
      调用通常意味着你在臆造条目，应停下来先问用户
    - 真没有可更新的确认事实时就不要调用这个工具
+   - **字段语义边界**（用户明确说过的内容对应到哪个字段）：
+     · `constraints_and_preferences`（append list）：用户给出的硬性约束 / 偏好。
+       例："不用 Playwright" / "预算 2 万" / "只能用 aiohttp"
+     · `key_decisions`（append list）：用户在可选项之间拍板的选择。
+       例："语言选 Python" / "先讨论不写代码" / "先做 MVP 再扩展"
+     · `progress`（scalar set）：当前讨论 / 工作进展到哪一步，每轮覆盖。
+       例："已明确 4 条需求" / "架构方案待定"
+     · `next_steps`（append list）：已经商定、下一步要做的具体动作。
+       例："n01: 讨论模块拆分" / "n02: 产出 SDK 接口草稿"
+     · `critical_context`（scalar set）：不好归到上述字段但关键的上下文。
+       例："用户是一人公司 CTO" / "目标降本增效、非增长导向"
+     · `relevant_files`（append list）：只在实际读过或写过文件后记录。
+   - 同一件事只进**一个**字段。用户说"先 Python 后 Java"是 key_decisions，不是
+     constraints；用户说"不用 Playwright" 是 constraints，不是 key_decisions
 
 4. 理解用户意图优先
    - 用户给出**方向声明**（"我想做 X"）不等于授权你立即开始设计/实现 X。

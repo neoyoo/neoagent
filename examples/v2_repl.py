@@ -433,7 +433,7 @@ async def main() -> None:
             "- recall_turn: recover compressed turns when you need their detail"
         ),
         max_turns=20,
-        context_budget=8_000,  # small-ish: compression triggers after ~5-10 Chinese turns
+        context_budget=4_500,  # aggressive: compression triggers after ~3-4 Chinese turns
         compression_strategy=compression_strategy,
         memory_review_strategy=review_strategy,
     )
