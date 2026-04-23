@@ -62,8 +62,18 @@ HEURISTIC_GUIDELINES_CONTENT = """<HEURISTIC_GUIDELINES>
    - 无法抓取的 URL 在输出中标记 "unreachable"，不生成虚构内容
 
 3. WorkingMemory 更新
-   - 在每轮 assistant 响应中，若 progress / next_steps / key_decisions 等字段有实质变化，
-     应调用 update_working_memory 更新对应字段，否则下轮你会看不到最新状态
+   - 只记录**用户已明确告诉你**的约束 / 决策 / 进展。**不要**把你自己的推论、
+     臆测、或默认假设写进 WM——那会把虚假上下文固化到后续所有轮
+   - 默认每轮 assistant 响应调用 update_working_memory **最多一次**。连续多次
+     调用通常意味着你在臆造条目，应停下来先问用户
+   - 真没有可更新的确认事实时就不要调用这个工具
+
+4. 理解用户意图优先
+   - 用户给出**方向声明**（"我想做 X"）不等于授权你立即开始设计/实现 X。
+     在用户真实需求模糊时，先问 1-2 个核心问题（目标场景？规模？技术栈偏好？
+     优先级？）确认，再行动
+   - 不要在对话开始时主动探索工作目录（read_file / 列文件），除非用户明确
+     让你读某个文件
 </HEURISTIC_GUIDELINES>"""
 
 SECURITY_BOUNDARY_CONTENT = """<SECURITY_BOUNDARY>

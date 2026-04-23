@@ -70,7 +70,11 @@ class UpdateWorkingMemoryInput(BaseModel):
 class UpdateWorkingMemoryTool(BaseTool):
     name = "update_working_memory"
     description = (
-        "Update session working memory. "
+        "Record facts that the USER has explicitly stated — constraints, "
+        "decisions, progress, next steps. Do NOT use this to record your own "
+        "assumptions, speculations, or default guesses; only user-confirmed "
+        "facts belong here. Prefer ONE call per assistant turn; batching many "
+        "fabricated entries is a sign you should stop and ask the user instead. "
         "Scalar fields (progress, critical_context) only support op=set. "
         "List fields (constraints_and_preferences, key_decisions, relevant_files, "
         "next_steps) support set/append/remove with prefix-id validation "
