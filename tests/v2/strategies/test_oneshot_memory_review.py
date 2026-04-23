@@ -57,6 +57,22 @@ def _make_strategy() -> OneShotMemoryReviewStrategy:
     return OneShotMemoryReviewStrategy(api_key="test-key", max_retries=3)
 
 
+# ── base_url support (Anthropic-protocol-compatible providers) ───────────────
+
+class TestBaseUrlSupport:
+    """Strategy must accept base_url for providers like DashScope-Anthropic."""
+
+    def test_default_base_url_is_none(self) -> None:
+        strategy = OneShotMemoryReviewStrategy(api_key="test-key")
+        assert strategy.base_url is None
+
+    def test_custom_base_url_stored(self) -> None:
+        url = "https://dashscope.aliyuncs.com/api/v2/apps/anthropic"
+        strategy = OneShotMemoryReviewStrategy(api_key="test-key", base_url=url)
+        assert strategy.base_url == url
+        assert strategy._client is not None
+
+
 def _mock_llm_text(payload: Any) -> MagicMock:
     """Build an AsyncAnthropic-style mock that returns the given payload as JSON text."""
     text = json.dumps(payload, ensure_ascii=False)

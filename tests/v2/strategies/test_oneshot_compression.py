@@ -61,6 +61,23 @@ def _make_strategy() -> OneShotCompressionStrategy:
     return OneShotCompressionStrategy(api_key="test-key", max_retries=3)
 
 
+# ── base_url support (Anthropic-protocol-compatible providers) ───────────────
+
+class TestBaseUrlSupport:
+    """Strategy must accept base_url for providers like DashScope-Anthropic."""
+
+    def test_default_base_url_is_none(self) -> None:
+        strategy = OneShotCompressionStrategy(api_key="test-key")
+        assert strategy.base_url is None
+
+    def test_custom_base_url_stored(self) -> None:
+        url = "https://dashscope.aliyuncs.com/api/v2/apps/anthropic"
+        strategy = OneShotCompressionStrategy(api_key="test-key", base_url=url)
+        assert strategy.base_url == url
+        # Client constructed without error (AsyncAnthropic accepts base_url kwarg)
+        assert strategy._client is not None
+
+
 def _mock_llm_response(json_payload: Any) -> MagicMock:
     """Build a mock that _call_llm will resolve to the given JSON string."""
     text = json.dumps(json_payload, ensure_ascii=False)

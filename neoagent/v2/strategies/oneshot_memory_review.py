@@ -49,11 +49,16 @@ class OneShotMemoryReviewStrategy(MemoryReviewStrategy):
         api_key: str,
         model: str = "claude-sonnet-4-6",
         max_retries: int = 3,
+        base_url: str | None = None,
     ) -> None:
         self.api_key = api_key
         self.model = model
         self.max_retries = max_retries
-        self._client = AsyncAnthropic(api_key=api_key)
+        self.base_url = base_url
+        # base_url=None falls back to the Anthropic default; pass a custom URL
+        # for Anthropic-protocol-compatible providers (e.g. DashScope's Qwen endpoint).
+        self._client = AsyncAnthropic(api_key=api_key, base_url=base_url) if base_url \
+            else AsyncAnthropic(api_key=api_key)
 
     async def review(
         self,
