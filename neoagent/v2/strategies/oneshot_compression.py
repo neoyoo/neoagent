@@ -35,7 +35,6 @@ _LIST_FIELDS = frozenset({
     "next_steps",
 })
 _SCALAR_FIELDS = frozenset({
-    "goal",
     "progress",
     "critical_context",
 })
@@ -55,7 +54,7 @@ class OneShotCompressionStrategy(CompressionStrategy):
     spec § 10.3 + § 10.3a
 
     Degrade strategy (a):
-    - Rules 1/2/3/4/5 violated → drop working_memory_delta (set to []),
+    - Rules 1-4 violated → drop working_memory_delta (set to []),
       retain batch_summary + batch_members, log warning, do NOT raise.
     - JSON parse failure / top-level structure error → retry up to max_retries;
       exhausted → raise CompressionError.
@@ -109,8 +108,6 @@ class OneShotCompressionStrategy(CompressionStrategy):
 
     def _build_prompt(self, ctx: CompressionContext) -> str:
         """Build compressor prompt from context, embedding all 8 hard rules."""
-        session_goal = ctx.previous_wm.get("goal", "(no goal set)")
-
         # Format previous_batches
         if ctx.previous_batches:
             batches_text = "\n".join(
@@ -146,7 +143,6 @@ class OneShotCompressionStrategy(CompressionStrategy):
             messages_text = "  （暂无消息）"
 
         return COMPRESSOR_PROMPT_TEMPLATE.format(
-            session_goal=session_goal,
             previous_batches=batches_text,
             previous_wm=previous_wm_text,
             messages_to_compress=messages_text,
@@ -240,14 +236,6 @@ class OneShotCompressionStrategy(CompressionStrategy):
             op = item.get("op", "")
             value = item.get("value")
             item_id = item.get("item_id")
-
-            # Rule 5: goal immutable — field="goal" forbidden in working_memory_delta
-            if field == "goal":
-                delta_violation = (
-                    f"Rule 5 violation: goal is immutable — "
-                    f"field='goal' found in working_memory_delta"
-                )
-                break
 
             if field in _SCALAR_FIELDS:
                 # Rule 3: scalar fields only allow op="set"

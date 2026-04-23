@@ -139,7 +139,7 @@ class OneShotMemoryReviewStrategy(MemoryReviewStrategy):
         except Exception:
             # Fallback: minimal representation
             working_memory_json = json.dumps(
-                {"session_id": wm.session_id, "goal": wm.goal},
+                {"session_id": wm.session_id},
                 ensure_ascii=False,
             )
 

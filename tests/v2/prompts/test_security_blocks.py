@@ -25,12 +25,6 @@ def test_build_security_sections_returns_four():
     assert names == {"hard_constraints", "heuristic_guidelines", "security_boundary", "tag_contract"}
 
 
-def test_hard_constraints_goal_immutable():
-    """HARD_CONSTRAINTS content mentions goal is immutable after framework_init."""
-    lower = HARD_CONSTRAINTS_CONTENT.lower()
-    assert "goal" in lower and ("immutable" in lower or "不可" in HARD_CONSTRAINTS_CONTENT)
-
-
 def test_hard_constraints_update_working_memory_five_turns():
     """HARD_CONSTRAINTS mentions update_working_memory and 5 turn cadence."""
     assert "update_working_memory" in HARD_CONSTRAINTS_CONTENT

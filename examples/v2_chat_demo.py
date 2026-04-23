@@ -144,14 +144,13 @@ async def main() -> None:
     agent.register_tool(UpdateWorkingMemoryTool(lambda: session.state))
     agent.register_tool(RecallTurnTool(lambda: session.state))
 
-    # framework_init — application layer bootstraps WorkingMemory with the initial goal.
-    # SDK intentionally does not auto-init: goal comes from whoever creates the session
-    # (in trip-os that will be the SessionManager on session-create).
+    # framework_init — application layer bootstraps WorkingMemory.
+    # SDK intentionally does not auto-init. The session task anchor (if any)
+    # goes into `critical_context`.
     session.state._current_wm = WorkingMemory(
         session_id=session.id,
         version=0,
         at_turn=0,
-        goal="爬取豆瓣电影 top 250 的片名和评分",
         constraints_and_preferences=[],
         progress="",
         key_decisions=[],
@@ -176,7 +175,7 @@ async def main() -> None:
         "value='c01: 只能使用 aiohttp + selectolax，禁用 Playwright'，op='append'。",
         "再用 update_working_memory 把 progress 设为："
         "'已确认工具选型：aiohttp + selectolax'。field='progress'，op='set'。",
-        "基于当前 working memory 的 goal 和 constraints，给我一个最简的 3 步骤实现大纲。",
+        "基于当前 working memory 的 constraints 和 progress，给我一个最简的 3 步骤实现大纲。",
     ]
 
     for i, prompt in enumerate(prompts, 1):
@@ -193,7 +192,6 @@ async def main() -> None:
     else:
         print(f"  session_id      : {wm.session_id}")
         print(f"  version         : {wm.version}")
-        print(f"  goal            : {wm.goal!r}")
         print(f"  progress        : {wm.progress!r}")
         print(f"  critical_context: {wm.critical_context!r}")
         print(f"  constraints_and_preferences ({len(wm.constraints_and_preferences)}):")

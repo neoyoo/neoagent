@@ -35,7 +35,6 @@ def _make_wm(session_id: str = "s1", version: int = 1, at_turn: int = 0) -> Work
         session_id=session_id,
         version=version,
         at_turn=at_turn,
-        goal="test goal",
         constraints_and_preferences=["c01: keep it short"],
         progress="in progress",
         key_decisions=["d01: use TDD"],
@@ -115,7 +114,6 @@ class TestSessionStateRoundTrip:
         assert rwm.session_id == "rt-wm"
         assert rwm.version == 3
         assert rwm.at_turn == 12
-        assert rwm.goal == "test goal"
         assert rwm.constraints_and_preferences == ["c01: keep it short"]
         assert rwm.progress == "in progress"
         assert rwm.key_decisions == ["d01: use TDD"]
@@ -296,7 +294,6 @@ class TestWorkingMemoryDatetimeSerialization:
             session_id="dt-serial",
             version=1,
             at_turn=0,
-            goal="check datetime",
             constraints_and_preferences=[],
             progress="",
             key_decisions=[],
@@ -319,7 +316,6 @@ class TestWorkingMemoryDatetimeSerialization:
             session_id="dt-deseial",
             version=1,
             at_turn=0,
-            goal="check datetime",
             constraints_and_preferences=[],
             progress="",
             key_decisions=[],
@@ -341,7 +337,6 @@ class TestWorkingMemoryDatetimeSerialization:
             session_id="s1",
             version=1,
             at_turn=3,
-            goal="g",
             constraints_and_preferences=[],
             progress="",
             key_decisions=[],

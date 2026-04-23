@@ -48,7 +48,6 @@ def _make_wm(session_id: str = "s1", version: int = 1) -> WorkingMemory:
         session_id=session_id,
         version=version,
         at_turn=0,
-        goal="test goal",
         constraints_and_preferences=[],
         progress="",
         key_decisions=[],
@@ -78,7 +77,7 @@ def _make_delta(
     ]
     ops = wm_ops or []
     return CompressionDelta(
-        batch_summary="GOAL: test\nPROGRESS: some\nDECISIONS:\nFILES:\nNEXT STEPS:\nKEY CONTEXT:",
+        batch_summary="PROGRESS: some\nDECISIONS:\nFILES:\nNEXT STEPS:\nKEY CONTEXT:",
         batch_members=members,
         working_memory_delta=ops,
     )

@@ -43,7 +43,6 @@ def _make_wm(session_id: str = "test-session") -> WorkingMemory:
         session_id=session_id,
         version=1,
         at_turn=0,
-        goal="Plan a trip to Bangkok",
         constraints_and_preferences=[],
         progress="",
         key_decisions=[],
@@ -181,38 +180,6 @@ class TestUpdateWmAppend:
         assert wm is not None
         assert "d01: 曼谷 3 晚" in wm.key_decisions
 
-
-class TestUpdateWmGoalImmutable:
-    """Task 8.6 — goal is immutable, any set attempt returns error."""
-
-    @pytest.mark.asyncio
-    async def test_8_6_2_goal_immutable_returns_error(self):
-        """8.6.2: LLM calls update_wm(field='goal', op='set', value='new') → is_error=True."""
-        wm_store = InMemoryWorkingMemoryStore()
-        responses = [
-            _make_tool_use_response(
-                "update_working_memory",
-                {"field": "goal", "op": "set", "value": "new goal"},
-                call_id="call_002",
-            ),
-            _make_end_turn_response(),
-        ]
-        provider = MockProvider(responses)
-        agent = _make_agent(provider, wm_store)
-        session = _setup_session_with_wm(agent)
-        original_goal = session.state._current_wm.goal
-
-        result = await _run_session(agent, session)
-
-        # Tool result is error
-        assert len(result.turns) >= 1
-        tr = result.turns[0].tool_results[0]
-        assert tr.is_error is True
-        assert "immutable" in tr.output.lower()
-
-        # WM.goal unchanged
-        wm = session.state._current_wm
-        assert wm.goal == original_goal
 
 
 class TestUpdateWmRemove:
@@ -450,16 +417,15 @@ class TestUpdateWmEvent:
 
 
 class TestUpdateWmFullRoundTrip:
-    """Task 8.6 — multi-turn full round-trip: append → immutable reject → remove → end."""
+    """Task 8.6 — multi-turn full round-trip: append → remove → end."""
 
     @pytest.mark.asyncio
     async def test_8_6_full_round_trip(self):
-        """Full scenario: append → goal reject → remove → snapshot + event.
+        """Full scenario: append → remove → snapshot + event.
 
         Turn 1: append d01: 曼谷 3 晚 → success
-        Turn 2: set goal → error (immutable), WM.goal unchanged
-        Turn 3: remove d01 → success
-        Turn 4: end_turn → WM snapshot + event emitted
+        Turn 2: remove d01 → success
+        Turn 3: end_turn → WM snapshot + event emitted
         """
         wm_store = InMemoryWorkingMemoryStore()
         responses = [
@@ -469,25 +435,18 @@ class TestUpdateWmFullRoundTrip:
                 {"field": "key_decisions", "op": "append", "value": "d01: 曼谷 3 晚"},
                 call_id="call_001",
             ),
-            # Turn 2: try to set goal (should fail)
-            _make_tool_use_response(
-                "update_working_memory",
-                {"field": "goal", "op": "set", "value": "new goal"},
-                call_id="call_002",
-            ),
-            # Turn 3: remove d01
+            # Turn 2: remove d01
             _make_tool_use_response(
                 "update_working_memory",
                 {"field": "key_decisions", "op": "remove", "item_id": "d01"},
-                call_id="call_003",
+                call_id="call_002",
             ),
-            # Turn 4: end
+            # Turn 3: end
             _make_end_turn_response("All done."),
         ]
         provider = MockProvider(responses)
         agent = _make_agent(provider, wm_store)
         session = _setup_session_with_wm(agent)
-        original_goal = session.state._current_wm.goal
         session_id = session.id
 
         received_events: list[WorkingMemoryUpdatedEvent] = []
@@ -497,32 +456,25 @@ class TestUpdateWmFullRoundTrip:
 
         # Collect all tool results
         tool_results = [tr for turn in result.turns for tr in turn.tool_results]
-        assert len(tool_results) == 3
+        assert len(tool_results) == 2
 
         # Turn 1: append succeeded
         assert tool_results[0].is_error is False
         assert "WM updated" in tool_results[0].output
 
-        # Turn 2: goal immutable → error
-        assert tool_results[1].is_error is True
-        assert "immutable" in tool_results[1].output.lower()
-
-        # Turn 3: remove succeeded
-        assert tool_results[2].is_error is False
+        # Turn 2: remove succeeded
+        assert tool_results[1].is_error is False
 
         # WM state after all turns
         wm = session.state._current_wm
         assert wm is not None
         # d01 should be gone
         assert not any(item.startswith("d01: ") for item in wm.key_decisions)
-        # goal should be unchanged
-        assert wm.goal == original_goal
 
         # WM snapshot: wm_store has the updated WM
         saved_wm = await wm_store.get_current(session_id)
         assert saved_wm is not None
         assert not any(item.startswith("d01: ") for item in saved_wm.key_decisions)
-        assert saved_wm.goal == original_goal
 
         # WorkingMemoryUpdatedEvent emitted exactly once (at end_turn)
         assert len(received_events) == 1

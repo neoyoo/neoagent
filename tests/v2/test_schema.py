@@ -13,7 +13,6 @@ class TestWorkingMemory:
             session_id="s1",
             version=1,
             at_turn=0,
-            goal="write tests",
             constraints_and_preferences=[],
             progress="",
             key_decisions=[],
@@ -31,7 +30,6 @@ class TestWorkingMemory:
         assert wm.session_id == "s1"
         assert wm.version == 1
         assert wm.at_turn == 0
-        assert wm.goal == "write tests"
 
     def test_list_fields_default_to_empty_list(self):
         from neoagent.v2.schema import WorkingMemory
@@ -57,10 +55,6 @@ class TestWorkingMemory:
     def test_updated_at_is_datetime(self):
         wm = self._make()
         assert isinstance(wm.updated_at, datetime)
-
-    def test_goal_field_exists(self):
-        wm = self._make(goal="explore Mars")
-        assert wm.goal == "explore Mars"
 
 
 # ── BatchMember ───────────────────────────────────────────────────────────────

@@ -33,7 +33,6 @@ def _make_wm() -> WorkingMemory:
         session_id="s-test",
         version=1,
         at_turn=5,
-        goal="Help user plan a trip to Japan",
         constraints_and_preferences=["c01: budget conscious", "c02: prefers trains"],
         progress="discussed Kyoto and Tokyo",
         key_decisions=["d01: 10-day itinerary"],
@@ -342,8 +341,8 @@ class TestPromptConstruction:
         wm = _make_wm()
         prompt = strategy._build_prompt("u1", _make_messages(), wm)
 
-        # WM goal should appear in serialized form
-        assert "Help user plan a trip to Japan" in prompt
+        # WM progress should appear in serialized form
+        assert "discussed Kyoto and Tokyo" in prompt
         # WM should be in JSON format (at minimum a { appears)
         assert "{" in prompt
 

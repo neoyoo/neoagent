@@ -17,7 +17,6 @@ def _make_wm(**overrides) -> WorkingMemory:
         session_id="s1",
         version=1,
         at_turn=0,
-        goal="test goal",
         constraints_and_preferences=[],
         progress="",
         key_decisions=[],
@@ -41,20 +40,6 @@ def _make_tool(wm: WorkingMemory | None):
     from neoagent.tools.builtin.update_working_memory import UpdateWorkingMemoryTool
     state = FakeState(wm)
     return UpdateWorkingMemoryTool(session_state_ref=lambda: state), state
-
-
-# ── 1. goal field rejected (immutable) ────────────────────────────────────────
-
-class TestGoalImmutable:
-    @pytest.mark.asyncio
-    async def test_goal_field_rejected(self):
-        """goal is immutable after framework_init — must return error."""
-        tool, _ = _make_tool(_make_wm())
-        from neoagent.tools.builtin.update_working_memory import UpdateWorkingMemoryInput
-        inp = UpdateWorkingMemoryInput(field="goal", value="new goal", op="set")
-        result = await tool.execute(inp)
-        assert result.is_error is True
-        assert "immutable" in result.output.lower()
 
 
 # ── 2. scalar field + op=append rejected ──────────────────────────────────────

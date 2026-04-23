@@ -90,7 +90,6 @@ def _valid_delta_json() -> dict:
     """A fully compliant CompressionDelta JSON payload."""
     return {
         "batch_summary": {
-            "GOAL": "build the login system",
             "CONSTRAINTS_AND_PREFERENCES": ["c01: use JWT"],
             "PROGRESS": "login done",
             "KEY_DECISIONS": ["d01: use FastAPI", "d02: 24h token"],
@@ -222,23 +221,6 @@ class TestRuleValidation:
         assert result.working_memory_delta == []
         assert result.batch_summary == payload["batch_summary"]
 
-    async def test_07_rule5_violation_goal_in_delta_drops_wm_delta(self):
-        """Rule 5: field='goal' in working_memory_delta is forbidden → wm_delta dropped."""
-        strategy = _make_strategy()
-        payload = _valid_delta_json()
-        payload["working_memory_delta"] = [
-            {"field": "goal", "op": "set", "value": "new goal — should be rejected"},
-        ]
-
-        with patch.object(
-            strategy._client.messages, "create",
-            new=AsyncMock(return_value=_mock_llm_response(payload)),
-        ):
-            result = await strategy.compress(_make_context())
-
-        assert result.working_memory_delta == []
-        assert result.batch_summary == payload["batch_summary"]
-
 
 # ── B. Degrade behaviour ──────────────────────────────────────────────────────
 
@@ -261,13 +243,11 @@ class TestDegradeBehaviour:
         assert isinstance(result, CompressionDelta)  # no raise
 
     async def test_09_batch_summary_preserved_on_wm_delta_drop(self):
-        """batch_summary must be preserved even when wm_delta is dropped."""
+        """batch_summary must be preserved even when wm_delta is dropped (rule 1 violation)."""
         strategy = _make_strategy()
         payload = _valid_delta_json()
-        # Rule 5 violation: goal in delta
-        payload["working_memory_delta"] = [
-            {"field": "goal", "op": "set", "value": "hijacked goal"},
-        ]
+        # Rule 1 violation: unknown member id
+        payload["batch_members"] = [{"id": "m99", "role": "user", "preview": "orphan"}]
         expected_summary = payload["batch_summary"]
 
         with patch.object(
@@ -355,19 +335,8 @@ class TestPromptConstruction:
         assert "remove" in prompt and "item_id" in prompt
         assert "前缀" in prompt or "^(c|d|f|n)" in prompt or "list 段 value" in prompt
 
-        # Rule 5: goal immutable
-        assert "goal immutable" in prompt or "goal 是不可变" in prompt or "不可变" in prompt
-
         # Rule 8: preview quality
         assert "preview" in prompt
-
-    def test_13_prompt_contains_session_goal(self):
-        """_build_prompt must include the session_goal explicitly."""
-        strategy = _make_strategy()
-        ctx = _make_context(previous_wm={"goal": "my specific unique session goal"})
-        prompt = strategy._build_prompt(ctx)
-
-        assert "my specific unique session goal" in prompt
 
     def test_14_prompt_contains_json_schema_top_level_keys(self):
         """_build_prompt must include all 3 top-level C4 JSON schema keys."""

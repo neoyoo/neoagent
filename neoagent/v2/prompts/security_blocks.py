@@ -33,11 +33,10 @@ HARD_CONSTRAINTS_CONTENT = """<HARD_CONSTRAINTS>
 
 3. update_working_memory(field, value, op, item_id)
    - permission="auto"：LLM 直接调用，不弹用户确认（仅修改 session 内 WM，不接触外部系统）
-   - field="goal" 时 validator 会 reject（goal 在 session 启动时烘入，不可由 LLM 改写；goal is immutable after framework_init）
-   - field 必须是 canonical schema § 2.3 WorkingMemory 的合法字段（goal /
-     constraints_and_preferences / progress / key_decisions / relevant_files /
+   - field 必须是 canonical schema § 2.3 WorkingMemory 的合法字段
+     （constraints_and_preferences / progress / key_decisions / relevant_files /
      next_steps / critical_context）
-   - 标量段（goal / progress / critical_context）op 只允许 "set"
+   - 标量段（progress / critical_context）op 只允许 "set"
    - list 段（constraints_and_preferences / key_decisions / relevant_files / next_steps）
      op 支持 "set" / "append" / "remove"；list 段 value 强制带前缀 id（c01 / d01 / f01 / n01）
    - op="remove" 时 item_id 必填且必须存在于该 list 字段（如 "c01"），否则 validator reject

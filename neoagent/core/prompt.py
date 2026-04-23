@@ -165,9 +165,6 @@ class LayeredPromptBuilder:
     def _render_working_memory(self, wm: "WorkingMemory") -> str:
         lines: list[str] = [
             f'<working_memory version="{wm.version}" at_turn="{wm.at_turn}">',
-            "  GOAL:",
-            f"    {wm.goal}",
-            "",
             "  CONSTRAINTS_AND_PREFERENCES:",
         ]
         for item in wm.constraints_and_preferences:

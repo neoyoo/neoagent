@@ -12,8 +12,6 @@ Design notes:
   SessionState, to avoid holding a stale reference across turn boundaries.
 - Does NOT bump wm.version — the Phase 4 Batch 4 snapshot path owns version
   increment at turn-end.
-- goal is immutable after framework_init: any call with field='goal' is
-  immediately rejected.
 - Scalar fields (progress, critical_context) only support op='set'.
 - List fields support set / append / remove with prefix-id validation.
 """
@@ -38,7 +36,6 @@ _LIST_FIELDS: frozenset[str] = frozenset({
 })
 
 _SCALAR_FIELDS: frozenset[str] = frozenset({
-    "goal",
     "progress",
     "critical_context",
 })
@@ -56,7 +53,6 @@ _PREFIX_MAP: dict[str, str] = {
 
 class UpdateWorkingMemoryInput(BaseModel):
     field: Literal[
-        "goal",
         "constraints_and_preferences",
         "progress",
         "key_decisions",
@@ -75,7 +71,6 @@ class UpdateWorkingMemoryTool(BaseTool):
     name = "update_working_memory"
     description = (
         "Update session working memory. "
-        "goal is immutable (any call with field='goal' is rejected). "
         "Scalar fields (progress, critical_context) only support op=set. "
         "List fields (constraints_and_preferences, key_decisions, relevant_files, "
         "next_steps) support set/append/remove with prefix-id validation "
@@ -106,15 +101,7 @@ class UpdateWorkingMemoryTool(BaseTool):
                 is_error=True,
             )
 
-        # Rule 1: goal is immutable
-        if input.field == "goal":
-            return ToolResult(
-                call_id="",
-                output="goal is immutable after framework_init",
-                is_error=True,
-            )
-
-        # Rule 2: scalar fields only support op=set
+        # Rule: scalar fields only support op=set
         if input.field in _SCALAR_FIELDS and input.op != "set":
             return ToolResult(
                 call_id="",
@@ -125,7 +112,7 @@ class UpdateWorkingMemoryTool(BaseTool):
                 is_error=True,
             )
 
-        # Rule 3: list fields value must have correct prefix-id format for set/append
+        # Rule: list fields value must have correct prefix-id format for set/append
         if input.field in _LIST_FIELDS and input.op in ("set", "append"):
             prefix = _PREFIX_MAP[input.field]
             # Accepted format: "<prefix><digits>: <anything>"  e.g. "c01: keep it short"
@@ -140,7 +127,7 @@ class UpdateWorkingMemoryTool(BaseTool):
                     is_error=True,
                 )
 
-        # Rule 4: op=remove requires item_id
+        # Rule: op=remove requires item_id
         if input.op == "remove" and input.item_id is None:
             return ToolResult(
                 call_id="",

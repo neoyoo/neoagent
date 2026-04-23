@@ -17,7 +17,6 @@ def _make_wm(session_id: str, version: int, at_turn: int = 1) -> WorkingMemory:
         session_id=session_id,
         version=version,
         at_turn=at_turn,
-        goal="test goal",
         constraints_and_preferences=[],
         progress="",
         key_decisions=[],

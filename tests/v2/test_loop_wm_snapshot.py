@@ -31,7 +31,6 @@ def _make_wm(session_id: str = "s1", version: int = 2, at_turn: int = 3) -> Work
         session_id=session_id,
         version=version,
         at_turn=at_turn,
-        goal="test goal",
         constraints_and_preferences=[],
         progress="some progress",
         key_decisions=[],

@@ -17,12 +17,17 @@ from typing import Literal
 
 @dataclass
 class WorkingMemory:
-    """spec § 2.3, lines 236-269 + § 2.3a lines 270-296"""
+    """spec § 2.3 — session-scoped short-term memory.
+
+    Session task anchor, if any, lives in `critical_context` (set by the
+    application layer at framework_init and updatable by the LLM via
+    update_working_memory). There is no dedicated immutable `goal` field —
+    this was removed in favour of application-layer freedom.
+    """
     session_id: str
     version: int
     at_turn: int
-    goal: str                                   # immutable after framework_init
-    constraints_and_preferences: list[str]      # list[str], prefix c01:
+    constraints_and_preferences: list[str]      # prefix c01:
     progress: str
     key_decisions: list[str]                    # prefix d01:
     relevant_files: list[str]                   # prefix f01:

@@ -31,7 +31,6 @@ def _wm(
     *,
     version: int = 3,
     at_turn: int = 12,
-    goal: str = "Plan a trip",
     constraints: list[str] | None = None,
     progress: str = "50% done",
     key_decisions: list[str] | None = None,
@@ -43,7 +42,6 @@ def _wm(
         session_id="s1",
         version=version,
         at_turn=at_turn,
-        goal=goal,
         constraints_and_preferences=constraints or [],
         progress=progress,
         key_decisions=key_decisions or [],
@@ -217,11 +215,9 @@ class TestBuildEphemeral:
     def test_wm_only(self):
         """C13: wm rendered with version and at_turn attributes, 7 sections."""
         builder = LayeredPromptBuilder()
-        wm = _wm(version=3, at_turn=12, goal="Plan a trip")
+        wm = _wm(version=3, at_turn=12)
         result = builder.build_ephemeral(wm=wm, batches=[], memory_entries=None)
         assert '<working_memory version="3" at_turn="12">' in result
-        assert "GOAL:" in result
-        assert "Plan a trip" in result
         assert "CONSTRAINTS_AND_PREFERENCES:" in result
         assert "PROGRESS:" in result
         assert "KEY_DECISIONS:" in result
@@ -297,8 +293,7 @@ class TestBuildEphemeral:
             next_steps=[],
         )
         result = builder.build_ephemeral(wm=wm, batches=[])
-        # Should not raise; all 7 section headers present
-        assert "GOAL:" in result
+        # Should not raise; section headers present
         assert "CONSTRAINTS_AND_PREFERENCES:" in result
         assert "KEY_DECISIONS:" in result
         assert "RELEVANT_FILES:" in result

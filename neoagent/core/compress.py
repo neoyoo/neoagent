@@ -18,7 +18,6 @@ _KEEP_RECENT = 6
 _SUMMARIZE_SYSTEM_TEMPLATE = """\
 You are a context compression assistant. Compress the conversation below using this structure:
 
-GOAL: <the original task or conversation goal — preserve from previous summary if provided>
 PROGRESS: <what has been accomplished>
 DECISIONS: <key decisions made>
 FILES: <files created or modified, if any>
@@ -396,12 +395,11 @@ def _apply_wm_op(wm, op_dict: dict) -> None:
     """Apply a single working_memory_delta operation to a WorkingMemory object.
 
     Supported ops:
-      - scalar fields (goal*, progress, critical_context): op="set"
+      - scalar fields (progress, critical_context): op="set"
       - list fields (constraints_and_preferences, key_decisions, relevant_files,
         next_steps): op="set"|"append"|"remove"
 
-    *goal is immutable; strategy layer should never produce op on goal.
-    This layer trusts that the 8-contract rules have already been validated
+    This layer trusts that the contract rules have already been validated
     by the strategy (per spec — Deterministic Executor validates orphan ids,
     not wm_delta content).
     """

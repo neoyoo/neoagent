@@ -277,13 +277,13 @@ class TestWorkingMemoryUpdatedEvent:
             session_id="s1",
             version=2,
             at_turn=4,
-            wm_json={"goal": "explore"},
+            wm_json={"progress": "explore"},
             updated_by="llm_tool",
         )
         assert e.session_id == "s1"
         assert e.version == 2
         assert e.at_turn == 4
-        assert e.wm_json == {"goal": "explore"}
+        assert e.wm_json == {"progress": "explore"}
         assert e.updated_by == "llm_tool"
 
     def test_eventbus_roundtrip(self):
