@@ -259,12 +259,19 @@ class QueryLoop:
                 turns.append(turn)
                 # Task 4.5: Snapshot _current_wm + emit WorkingMemoryUpdatedEvent
                 # BEFORE TurnCompleteEvent (WM snapshot is a turn-ending side-effect).
+                # spec § 2.3a: SDK owns version/at_turn on snapshot (version aligns
+                # with session-level turn number; tool update_working_memory does not
+                # bump version — see its docstring).
                 if (
                     self._wm_store is not None
                     and session_state is not None
                     and session_state._current_wm is not None
                 ):
+                    from datetime import datetime, timezone
                     _wm = session_state._current_wm
+                    _wm.version += 1
+                    _wm.at_turn = _wm.version
+                    _wm.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
                     await self._wm_store.save(_session.id, _wm)
                     from neoagent.session import _wm_to_dict
                     self._bus.emit(WorkingMemoryUpdatedEvent(

@@ -132,9 +132,13 @@ class TestTask45WmSnapshot:
 
     @pytest.mark.asyncio
     async def test_wm_updated_event_emitted(self):
-        """WorkingMemoryUpdatedEvent emitted with correct payload fields."""
+        """WorkingMemoryUpdatedEvent emitted with correct payload fields.
+
+        spec § 2.3a: the snapshot path bumps version (6 → 7) and sets
+        at_turn=version, so the event carries the post-bump values.
+        """
         wm_store = AsyncMock(spec=WorkingMemoryStore)
-        wm = _make_wm(session_id="s1", version=7, at_turn=3)
+        wm = _make_wm(session_id="s1", version=6, at_turn=2)
         session = _make_session(wm=wm)
         session.messages.append(Message(role="user", content="Hi"))
 
@@ -148,11 +152,62 @@ class TestTask45WmSnapshot:
         assert len(received) == 1
         evt = received[0]
         assert evt.session_id == "s1"
-        assert evt.version == 7
-        assert evt.at_turn == 3
+        assert evt.version == 7          # bumped 6 → 7
+        assert evt.at_turn == 7          # aligned to new version
         assert evt.updated_by == "framework_compression"
         assert isinstance(evt.wm_json, dict)
         assert evt.wm_json["version"] == 7
+
+    @pytest.mark.asyncio
+    async def test_version_and_at_turn_bumped_on_snapshot(self):
+        """spec § 2.3a — SDK bumps version/at_turn on every end_turn snapshot.
+
+        The tool update_working_memory intentionally does NOT bump version
+        (see its docstring). The snapshot path in loop.py owns it: each
+        end_turn snapshot increments version by 1 and sets at_turn=version.
+        """
+        wm_store = AsyncMock(spec=WorkingMemoryStore)
+        # framework_init state: version=0, at_turn=0
+        wm = _make_wm(session_id="s1", version=0, at_turn=0)
+        session = _make_session(wm=wm)
+        session.messages.append(Message(role="user", content="Hi"))
+
+        bus = EventBus()
+        received: list[WorkingMemoryUpdatedEvent] = []
+        bus.subscribe(WorkingMemoryUpdatedEvent, received.append)
+
+        loop = _make_loop(wm_store=wm_store, event_bus=bus)
+        await loop.run(session=session)
+
+        # After one completed turn: version=1, at_turn=1
+        assert session.state._current_wm.version == 1
+        assert session.state._current_wm.at_turn == 1
+        assert len(received) == 1
+        assert received[0].version == 1
+        assert received[0].at_turn == 1
+
+        # Second run: version=2, at_turn=2
+        session.messages.append(Message(role="user", content="Again"))
+        await loop.run(session=session)
+        assert session.state._current_wm.version == 2
+        assert session.state._current_wm.at_turn == 2
+        assert received[-1].version == 2
+        assert received[-1].at_turn == 2
+
+    @pytest.mark.asyncio
+    async def test_updated_at_refreshed_on_snapshot(self):
+        """updated_at must be refreshed at snapshot so clients see fresh timestamps."""
+        wm_store = AsyncMock(spec=WorkingMemoryStore)
+        stale = datetime(2020, 1, 1, 0, 0, 0)
+        wm = _make_wm(session_id="s1", version=0, at_turn=0)
+        wm.updated_at = stale
+        session = _make_session(wm=wm)
+        session.messages.append(Message(role="user", content="Hi"))
+
+        loop = _make_loop(wm_store=wm_store)
+        await loop.run(session=session)
+
+        assert session.state._current_wm.updated_at > stale
 
     @pytest.mark.asyncio
     async def test_wm_updated_before_turn_complete(self):
