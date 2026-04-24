@@ -169,8 +169,12 @@ class JsonFileStorage:
 
 
 def _message_to_dict(msg: Message) -> dict:
+    out: dict = {"role": msg.role}
+    if msg.id is not None:
+        out["id"] = msg.id
     if isinstance(msg.content, str):
-        return {"role": msg.role, "content": msg.content}
+        out["content"] = msg.content
+        return out
     blocks = []
     for b in msg.content:
         if isinstance(b, TextBlock):
@@ -180,13 +184,15 @@ def _message_to_dict(msg: Message) -> dict:
         elif isinstance(b, ToolResultBlock):
             blocks.append({"type": "tool_result", "tool_use_id": b.tool_use_id,
                            "content": b.content, "is_error": b.is_error})
-    return {"role": msg.role, "content": blocks}
+    out["content"] = blocks
+    return out
 
 
 def _message_from_dict(d: dict) -> Message:
+    msg_id = d.get("id")
     content = d["content"]
     if isinstance(content, str):
-        return Message(role=d["role"], content=content)
+        return Message(id=msg_id, role=d["role"], content=content)
     blocks = []
     for b in content:
         t = b["type"]
@@ -197,7 +203,7 @@ def _message_from_dict(d: dict) -> Message:
         elif t == "tool_result":
             blocks.append(ToolResultBlock(tool_use_id=b["tool_use_id"],
                                           content=b["content"], is_error=b.get("is_error", False)))
-    return Message(role=d["role"], content=blocks)
+    return Message(id=msg_id, role=d["role"], content=blocks)
 
 
 def _wm_to_dict(wm: WorkingMemory) -> dict:

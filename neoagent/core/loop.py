@@ -302,16 +302,17 @@ class QueryLoop:
                         items_stored=items_stored,
                     ))
                 # Task 4.4: Emit MessageCreatedEvent for assistant_reply (end_turn path)
+                _msg_id = session_state.id_gen.next_msg_id() if session_state else None
                 if session_state:
                     self._bus.emit(MessageCreatedEvent(
                         session_id=_session.id,
-                        msg_id=session_state.id_gen.next_msg_id(),
+                        msg_id=_msg_id,
                         turn=turn_idx,
                         role="assistant",
                         source_type="assistant_reply",
                         content=list(response.content),
                     ))
-                msgs.append(Message(role="assistant", content=response.content))
+                msgs.append(Message(id=_msg_id, role="assistant", content=response.content))
                 if session_state:
                     session_state.recalled_this_turn.clear()
                 _session.save_if_storage()  # per-turn auto-save (end_turn)
@@ -324,12 +325,13 @@ class QueryLoop:
             results = await self._executor.execute(tool_calls)
             if self._memory_manager:
                 self._memory_manager.record_tool_calls(len(tool_calls), session_state=session_state)
-            assistant_msg = Message(role="assistant", content=response.content)
+            _assistant_msg_id = session_state.id_gen.next_msg_id() if session_state else None
+            assistant_msg = Message(id=_assistant_msg_id, role="assistant", content=response.content)
             # Task 4.4: Emit MessageCreatedEvent for assistant_reply (tool_use path)
             if session_state:
                 self._bus.emit(MessageCreatedEvent(
                     session_id=_session.id,
-                    msg_id=session_state.id_gen.next_msg_id(),
+                    msg_id=_assistant_msg_id,
                     turn=turn_idx,
                     role="assistant",
                     source_type="assistant_reply",
@@ -337,7 +339,8 @@ class QueryLoop:
                 ))
             msgs.append(assistant_msg)
             tool_result_blocks = [ToolResultBlock(tool_use_id=r.call_id, content=r.output, is_error=r.is_error) for r in results]
-            result_msg = Message(role="user", content=tool_result_blocks)
+            _tool_result_msg_id = session_state.id_gen.next_msg_id() if session_state else None
+            result_msg = Message(id=_tool_result_msg_id, role="user", content=tool_result_blocks)
             msgs.append(result_msg)
             # Record tool_use_id → tool_name mapping (used by free_tool_result tool and events).
             # Must be populated before emitting ToolResultPersistedEvent.
@@ -348,7 +351,7 @@ class QueryLoop:
             if session_state:
                 self._bus.emit(MessageCreatedEvent(
                     session_id=_session.id,
-                    msg_id=session_state.id_gen.next_msg_id(),
+                    msg_id=_tool_result_msg_id,
                     turn=turn_idx,
                     role="user",
                     source_type="tool_result",

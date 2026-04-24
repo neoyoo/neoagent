@@ -230,7 +230,9 @@ class NeoAgent:
         _temp = session is None
         if _temp:
             session = Session.create()
-        session.messages.append(Message(role="user", content=message))
+        # Assign msg_id so recall_turn / compressor can find this user input later.
+        _user_msg_id = session.state.id_gen.next_msg_id()
+        session.messages.append(Message(id=_user_msg_id, role="user", content=message))
         if not _temp and self._storage is not None:
             session.bind_storage(self._storage)
         self._current_session = session

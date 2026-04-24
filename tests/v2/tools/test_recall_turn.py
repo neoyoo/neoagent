@@ -1,195 +1,247 @@
 # tests/v2/tools/test_recall_turn.py
-"""TDD tests for Task 5.2 — RecallTurnTool.
+"""Unit tests for RecallTurnTool — new session.messages-based interface.
 
 Spec refs: § 14.2, § 15.4
 Contract refs: C6
+
+RecallTurnTool now looks up Messages by id from session.messages (not from
+BatchMember.preview). Content is returned verbatim (str or list of block dicts).
+Missing ids go into 'missing' field, not is_error.
 """
 from __future__ import annotations
 
 import json
 import pytest
-from datetime import datetime
 
-from neoagent.v2.schema import Batch, BatchMember
-
-
-def _make_batch(batch_id: str, members: list[BatchMember]) -> Batch:
-    now = datetime(2026, 4, 22, 12, 0, 0)
-    return Batch(
-        session_id="s1",
-        batch_id=batch_id,
-        turns_from=0,
-        turns_to=5,
-        time_from=now,
-        time_to=now,
-        summary="test batch",
-        members=members,
-        trigger="token_threshold",
-        created_at=now,
-    )
+from neoagent.core.types import Message, TextBlock, ToolUseBlock, ToolResultBlock
 
 
-class FakeState:
-    """Minimal session_state stub with optional batches."""
-    def __init__(self, batches=None):
-        self.batches = batches if batches is not None else []
+class FakeSession:
+    """Minimal session stub exposing .messages list."""
+    def __init__(self, messages: list[Message] | None = None):
+        self.messages = messages if messages is not None else []
 
 
-def _make_tool(batches=None):
+def _make_tool(messages: list[Message] | None = None):
     from neoagent.tools.builtin.recall_turn import RecallTurnTool
-    state = FakeState(batches=batches)
-    return RecallTurnTool(session_state_ref=lambda: state), state
+    session = FakeSession(messages=messages)
+    return RecallTurnTool(session_ref=lambda: session)
 
 
-# ── 1. turn_ids all in recoverable → returns preview ─────────────────────────
+# ── 1. single id hit — str content ───────────────────────────────────────────
 
-class TestRecallSuccess:
+class TestSingleIdHit:
     @pytest.mark.asyncio
-    async def test_single_turn_id_returns_preview(self):
-        members = [
-            BatchMember(id="m1", role="user", preview="user asked about X"),
-            BatchMember(id="m2", role="assistant", preview="assistant answered Y"),
+    async def test_single_id_str_content(self):
+        msgs = [
+            Message(id="m1", role="user", content="hello world"),
+            Message(id="m2", role="assistant", content="hi there"),
         ]
-        batch = _make_batch("cm_1", members)
-        tool, _ = _make_tool(batches=[batch])
+        tool = _make_tool(msgs)
 
         from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        inp = RecallTurnInput(turn_ids=["m1"])
-        result = await tool.execute(inp)
+        result = await tool.execute(RecallTurnInput(turn_ids=["m1"]))
+
+        assert result.is_error is False
+        data = json.loads(result.output)
+        assert len(data["recalled"]) == 1
+        r = data["recalled"][0]
+        assert r["id"] == "m1"
+        assert r["role"] == "user"
+        assert r["content"] == "hello world"
+
+
+# ── 2. multiple ids — some hit, some miss ─────────────────────────────────────
+
+class TestPartialMiss:
+    @pytest.mark.asyncio
+    async def test_hit_and_miss_go_to_respective_fields(self):
+        msgs = [Message(id="m1", role="user", content="msg1")]
+        tool = _make_tool(msgs)
+
+        from neoagent.tools.builtin.recall_turn import RecallTurnInput
+        result = await tool.execute(RecallTurnInput(turn_ids=["m1", "m99"]))
 
         assert result.is_error is False
         data = json.loads(result.output)
         assert len(data["recalled"]) == 1
         assert data["recalled"][0]["id"] == "m1"
-        assert data["recalled"][0]["preview"] == "user asked about X"
-        assert data["recalled"][0]["role"] == "user"
+        assert "m99" in data["missing"]
 
     @pytest.mark.asyncio
-    async def test_multiple_turn_ids_returned(self):
-        members = [
-            BatchMember(id="m3", role="user", preview="msg 3"),
-            BatchMember(id="m4", role="assistant", preview="msg 4"),
+    async def test_multiple_ids_all_hit(self):
+        msgs = [
+            Message(id="m3", role="user", content="msg3"),
+            Message(id="m4", role="assistant", content="msg4"),
         ]
-        batch = _make_batch("cm_1", members)
-        tool, _ = _make_tool(batches=[batch])
+        tool = _make_tool(msgs)
 
         from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        inp = RecallTurnInput(turn_ids=["m3", "m4"])
-        result = await tool.execute(inp)
+        result = await tool.execute(RecallTurnInput(turn_ids=["m3", "m4"]))
 
         assert result.is_error is False
         data = json.loads(result.output)
         assert len(data["recalled"]) == 2
-        ids = {item["id"] for item in data["recalled"]}
+        ids = {r["id"] for r in data["recalled"]}
         assert ids == {"m3", "m4"}
 
 
-# ── 2. turn_ids partially not in recoverable → error ─────────────────────────
-
-class TestPartialMissing:
-    @pytest.mark.asyncio
-    async def test_partial_missing_returns_error(self):
-        members = [BatchMember(id="m1", role="user", preview="msg 1")]
-        batch = _make_batch("cm_1", members)
-        tool, _ = _make_tool(batches=[batch])
-
-        from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        inp = RecallTurnInput(turn_ids=["m1", "m99"])
-        result = await tool.execute(inp)
-
-        assert result.is_error is True
-        assert "m99" in result.output
-
-
-# ── 3. turn_ids completely not in recoverable → error ─────────────────────────
+# ── 3. all ids missing ────────────────────────────────────────────────────────
 
 class TestAllMissing:
     @pytest.mark.asyncio
-    async def test_all_missing_returns_error(self):
-        members = [BatchMember(id="m1", role="user", preview="msg 1")]
-        batch = _make_batch("cm_1", members)
-        tool, _ = _make_tool(batches=[batch])
+    async def test_all_missing_goes_to_missing_field_not_error(self):
+        msgs = [Message(id="m1", role="user", content="msg1")]
+        tool = _make_tool(msgs)
 
         from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        inp = RecallTurnInput(turn_ids=["x1", "x2"])
-        result = await tool.execute(inp)
+        result = await tool.execute(RecallTurnInput(turn_ids=["x1", "x2"]))
 
-        assert result.is_error is True
-        assert "x1" in result.output or "x2" in result.output
-
-
-# ── 4. session has no batches → error (no recoverable at all) ─────────────────
-
-class TestNoBatches:
-    @pytest.mark.asyncio
-    async def test_no_batches_returns_error(self):
-        tool, _ = _make_tool(batches=[])
-
-        from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        inp = RecallTurnInput(turn_ids=["m1"])
-        result = await tool.execute(inp)
-
-        assert result.is_error is True
-
-    @pytest.mark.asyncio
-    async def test_state_without_batches_attr_returns_error(self):
-        """If state has no batches attribute at all, treat as no recoverable."""
-        from neoagent.tools.builtin.recall_turn import RecallTurnTool
-
-        class StateNoBatches:
-            pass  # no batches attribute
-
-        tool = RecallTurnTool(session_state_ref=lambda: StateNoBatches())
-        from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        inp = RecallTurnInput(turn_ids=["m1"])
-        result = await tool.execute(inp)
-
-        assert result.is_error is True
+        assert result.is_error is False
+        data = json.loads(result.output)
+        assert data["recalled"] == []
+        assert "x1" in data["missing"]
+        assert "x2" in data["missing"]
 
 
-# ── 5. empty turn_ids → returns empty recalled (not error) ────────────────────
+# ── 4. empty turn_ids ─────────────────────────────────────────────────────────
 
 class TestEmptyTurnIds:
     @pytest.mark.asyncio
-    async def test_empty_turn_ids_returns_empty_list(self):
-        members = [BatchMember(id="m1", role="user", preview="msg 1")]
-        batch = _make_batch("cm_1", members)
-        tool, _ = _make_tool(batches=[batch])
+    async def test_empty_turn_ids_returns_empty_recalled(self):
+        msgs = [Message(id="m1", role="user", content="msg1")]
+        tool = _make_tool(msgs)
 
         from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        inp = RecallTurnInput(turn_ids=[])
-        result = await tool.execute(inp)
+        result = await tool.execute(RecallTurnInput(turn_ids=[]))
+
+        assert result.is_error is False
+        data = json.loads(result.output)
+        assert data["recalled"] == []
+
+    @pytest.mark.asyncio
+    async def test_empty_turn_ids_no_messages_still_ok(self):
+        tool = _make_tool([])
+
+        from neoagent.tools.builtin.recall_turn import RecallTurnInput
+        result = await tool.execute(RecallTurnInput(turn_ids=[]))
 
         assert result.is_error is False
         data = json.loads(result.output)
         assert data["recalled"] == []
 
 
-# ── 6. multiple batches across → correct members returned ─────────────────────
+# ── 5. list content — block dicts returned ────────────────────────────────────
 
-class TestMultipleBatches:
+class TestListContent:
     @pytest.mark.asyncio
-    async def test_recall_across_multiple_batches(self):
-        batch1 = _make_batch("cm_1", [
-            BatchMember(id="m1", role="user", preview="batch1 msg1"),
-            BatchMember(id="m2", role="assistant", preview="batch1 msg2"),
-        ])
-        batch2 = _make_batch("cm_2", [
-            BatchMember(id="m5", role="user", preview="batch2 msg5"),
-            BatchMember(id="m6", role="assistant", preview="batch2 msg6"),
-        ])
-        tool, _ = _make_tool(batches=[batch1, batch2])
+    async def test_text_block_content_serialized_as_dict(self):
+        msgs = [
+            Message(id="m1", role="assistant", content=[TextBlock(text="hi")]),
+        ]
+        tool = _make_tool(msgs)
 
         from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        inp = RecallTurnInput(turn_ids=["m2", "m5"])
-        result = await tool.execute(inp)
+        result = await tool.execute(RecallTurnInput(turn_ids=["m1"]))
 
         assert result.is_error is False
         data = json.loads(result.output)
-        assert len(data["recalled"]) == 2
-        ids = {item["id"] for item in data["recalled"]}
-        assert ids == {"m2", "m5"}
+        content = data["recalled"][0]["content"]
+        assert isinstance(content, list)
+        assert content[0]["type"] == "text"
+        assert content[0]["text"] == "hi"
 
-        previews = {item["id"]: item["preview"] for item in data["recalled"]}
-        assert previews["m2"] == "batch1 msg2"
-        assert previews["m5"] == "batch2 msg5"
+    @pytest.mark.asyncio
+    async def test_tool_use_block_serialized(self):
+        msgs = [
+            Message(id="m2", role="assistant", content=[
+                ToolUseBlock(id="tu1", name="search", input={"query": "Bangkok"}),
+            ]),
+        ]
+        tool = _make_tool(msgs)
+
+        from neoagent.tools.builtin.recall_turn import RecallTurnInput
+        result = await tool.execute(RecallTurnInput(turn_ids=["m2"]))
+
+        assert result.is_error is False
+        data = json.loads(result.output)
+        content = data["recalled"][0]["content"]
+        assert content[0]["type"] == "tool_use"
+        assert content[0]["name"] == "search"
+        assert content[0]["input"]["query"] == "Bangkok"
+
+    @pytest.mark.asyncio
+    async def test_tool_result_block_serialized(self):
+        msgs = [
+            Message(id="m3", role="user", content=[
+                ToolResultBlock(tool_use_id="tu1", content="results here", is_error=False),
+            ]),
+        ]
+        tool = _make_tool(msgs)
+
+        from neoagent.tools.builtin.recall_turn import RecallTurnInput
+        result = await tool.execute(RecallTurnInput(turn_ids=["m3"]))
+
+        assert result.is_error is False
+        data = json.loads(result.output)
+        content = data["recalled"][0]["content"]
+        assert content[0]["type"] == "tool_result"
+        assert content[0]["tool_use_id"] == "tu1"
+        assert content[0]["content"] == "results here"
+
+
+# ── 6. session_ref returns object without .messages → is_error=True ──────────
+
+class TestMissingMessagesAttr:
+    @pytest.mark.asyncio
+    async def test_no_messages_attr_returns_error(self):
+        from neoagent.tools.builtin.recall_turn import RecallTurnTool
+
+        class BrokenRef:
+            pass  # no .messages, no .session
+
+        tool = RecallTurnTool(session_ref=lambda: BrokenRef())
+        from neoagent.tools.builtin.recall_turn import RecallTurnInput
+        result = await tool.execute(RecallTurnInput(turn_ids=["m1"]))
+
+        assert result.is_error is True
+        assert "missing" in result.output.lower() or "messages" in result.output.lower()
+
+    @pytest.mark.asyncio
+    async def test_session_with_nested_session_messages_works(self):
+        """session_ref returns obj.session.messages (SessionState-like fallback)."""
+        from neoagent.tools.builtin.recall_turn import RecallTurnTool
+
+        inner = FakeSession(messages=[Message(id="m1", role="user", content="nested")])
+
+        class StateWrapper:
+            session = inner
+
+        tool = RecallTurnTool(session_ref=lambda: StateWrapper())
+        from neoagent.tools.builtin.recall_turn import RecallTurnInput
+        result = await tool.execute(RecallTurnInput(turn_ids=["m1"]))
+
+        assert result.is_error is False
+        data = json.loads(result.output)
+        assert data["recalled"][0]["content"] == "nested"
+
+
+# ── 7. messages without id are skipped in index ───────────────────────────────
+
+class TestMessageWithoutId:
+    @pytest.mark.asyncio
+    async def test_message_without_id_not_indexed(self):
+        """Message with id=None is not indexed and cannot be recalled."""
+        msgs = [
+            Message(id=None, role="user", content="no-id message"),
+            Message(id="m1", role="assistant", content="has id"),
+        ]
+        tool = _make_tool(msgs)
+
+        from neoagent.tools.builtin.recall_turn import RecallTurnInput
+        result = await tool.execute(RecallTurnInput(turn_ids=["m1"]))
+
+        assert result.is_error is False
+        data = json.loads(result.output)
+        assert len(data["recalled"]) == 1
+        assert data["recalled"][0]["id"] == "m1"

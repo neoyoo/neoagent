@@ -461,7 +461,7 @@ async def main() -> None:
     # Register tools: v2 builtins + read_file + (optional) v1 free_tool_result
     agent.register_tool(ReadFileTool(base_dir=Path.cwd()))
     agent.register_tool(UpdateWorkingMemoryTool(lambda: session.state))
-    agent.register_tool(RecallTurnTool(lambda: session.state))
+    agent.register_tool(RecallTurnTool(lambda: session))
     try:
         from neoagent.tools.builtin.free_tool_result import FreeToolResultTool
         agent.register_tool(FreeToolResultTool())

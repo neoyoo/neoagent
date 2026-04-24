@@ -142,7 +142,7 @@ async def main() -> None:
     # Register v2 built-in tools (not auto-registered)
     session = agent.new_session()
     agent.register_tool(UpdateWorkingMemoryTool(lambda: session.state))
-    agent.register_tool(RecallTurnTool(lambda: session.state))
+    agent.register_tool(RecallTurnTool(lambda: session))
 
     # framework_init — application layer bootstraps WorkingMemory.
     # SDK intentionally does not auto-init. The session task anchor (if any)

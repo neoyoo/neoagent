@@ -25,6 +25,10 @@ class ToolResultBlock(BaseModel):
 ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock
 
 class Message(BaseModel):
+    # id: session-local msg_id assigned by SessionIdGenerator ("m1", "m2", …).
+    # Optional for backward compatibility — older messages and Anthropic-native
+    # construction won't have it; recall_turn / compression rely on it where set.
+    id: str | None = None
     role: Literal["user", "assistant"]
     content: str | list[ContentBlock]
 
