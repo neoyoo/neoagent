@@ -8,3 +8,5 @@ build/
 logs/
 .DS_Store
 sessions/
+docs/superpowers/plans/
+.claude/agent-logs/
