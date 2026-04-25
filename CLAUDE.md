@@ -36,6 +36,28 @@ neoagent 是一个 Python AI Agent SDK，目标是提供生产级的 agent 开�
 - **Teams 模式**：多 agent 共享项目上下文 + 协调策略，类似 Claude Code Teams
 - **关键设计原则**：Worker 是协议不是类，本地/远程 worker 只是传输层不同，核心调度逻辑不变
 
+## 待办 / TODO
+
+### Langfuse 接入（分布式链路追踪）
+
+**状态**：已决策（2026-04-22），未开始。启动时机：v3.2d 合并 main 后，作为 v3.3 里程碑之一。
+
+**目标**：让 LLM 实际交互可见——主 agent → skill/MCP → subagent 的完整调用树在 UI 上呈现。
+
+**技术路线**：
+- 走 **OTEL 标准**（W3C traceparent），Langfuse 作为自托管 backend
+- `contextvars` 承载 TraceContext，`LangfuseObserver` 订阅 EventBus
+- Task Envelope 加 `trace_context` 字段（跨 worker 边界）
+- MCP 请求 `_meta.traceparent` 注入（跨子进程边界）
+- 发布形态：`pip install neoagent[langfuse]` optional extras
+
+**分阶段**：
+- Phase 1（1 周）：单进程 + sub-agent 链路 → Langfuse UI 呈现嵌套树
+- Phase 2（1 周）：MCP 边界穿透
+- Phase 3（选做）：HTTP channel 入口 + Prompt 版本管理 + Cost 归因
+
+**完整决策文档**：`../ai- knowledge/projects/neoagent/decisions/2026-04-22-langfuse-integration.md`
+
 ## 开发规范
 
 - **测试**：pytest，TDD 优先，当前 577+ tests，新功能须先写测试
