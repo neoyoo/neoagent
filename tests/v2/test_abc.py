@@ -58,7 +58,6 @@ def _make_compression_context() -> "CompressionContext":
 def _make_compression_delta() -> "CompressionDelta":
     from neoagent.v2.schema import CompressionDelta
     return CompressionDelta(
-        batch_summary="7-section text",
         batch_members=[],
         working_memory_delta=[],
     )

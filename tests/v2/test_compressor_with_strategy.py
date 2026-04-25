@@ -59,11 +59,13 @@ def _make_wm(session_id: str = "s1", version: int = 1) -> WorkingMemory:
     )
 
 
-def _make_messages(n: int = 5) -> list[Message]:
+def _make_messages(n_turns: int = 6) -> list[Message]:
+    """Create n_turns user+assistant pairs with distinct turn values (>= 6 for split to fire)."""
+    effective = max(n_turns, 6)
     msgs = []
-    for i in range(n):
-        role = "user" if i % 2 == 0 else "assistant"
-        msgs.append(Message(role=role, content=f"message {i}"))
+    for turn_idx in range(effective):
+        msgs.append(Message(role="user", content=f"user message {turn_idx}", turn=turn_idx))
+        msgs.append(Message(role="assistant", content=f"assistant message {turn_idx}", turn=turn_idx))
     return msgs
 
 
@@ -77,7 +79,6 @@ def _make_delta(
     ]
     ops = wm_ops or []
     return CompressionDelta(
-        batch_summary="PROGRESS: some\nDECISIONS:\nFILES:\nNEXT STEPS:\nKEY CONTEXT:",
         batch_members=members,
         working_memory_delta=ops,
     )
@@ -140,7 +141,7 @@ class TestTask46ContextCompressorWithStrategy:
         assert len(batch_events) == 1
         evt = batch_events[0]
         assert evt.session_id == "s1"
-        assert evt.summary == delta.batch_summary
+        assert evt.summary is None  # Bug #2: batch_summary deprecated, delta.batch_summary=None
         assert len(evt.members) == 1
 
     @pytest.mark.asyncio
@@ -211,7 +212,6 @@ class TestTask46ContextCompressorWithStrategy:
         state = _make_session_state(wm=wm)
 
         delta = CompressionDelta(
-            batch_summary="test summary",
             batch_members=[],
             working_memory_delta=[
                 {"field": "key_decisions", "op": "append", "value": "d01: important decision"},

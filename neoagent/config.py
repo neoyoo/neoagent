@@ -10,6 +10,7 @@ if TYPE_CHECKING:
         MemoryReviewStrategy,
         WorkingMemoryStore,
     )
+    from neoagent.v2.compressed_store import CompressedMessageStore
 
 @dataclass
 class NeoAgentConfig:
@@ -32,6 +33,7 @@ class NeoAgentConfig:
     compression_strategy: "CompressionStrategy | None" = field(default=None)
     memory_review_strategy: "MemoryReviewStrategy | None" = field(default=None)
     memory_provider: "MemoryProvider | None" = field(default=None)
+    compressed_message_store: "CompressedMessageStore | None" = field(default=None)
     enable_source_wrap: bool = True
     enable_security_prompt_blocks: bool = True
 

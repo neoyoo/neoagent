@@ -7,9 +7,9 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from neoagent.config import NeoAgentConfig
 from neoagent.core.loop import QueryLoop
-from neoagent.core.prompt import PromptBuilder, PromptSection
+from neoagent.core.prompt import LayeredPromptBuilder, PromptBuilder, PromptSection
 from neoagent.core.types import ConversationResult, Message, TextBlock
-from neoagent.events import EventBus, SessionResumeWarningEvent, TurnCompleteEvent
+from neoagent.events import EventBus, MessageCreatedEvent, SessionResumeWarningEvent, TurnCompleteEvent
 from neoagent.hooks import HookManager, HookType, HookHandler
 from neoagent.providers.base import Provider
 from neoagent.session import JsonFileStorage, Session, SessionStorage
@@ -25,6 +25,7 @@ from neoagent.mcp.tool import create_mcp_tools
 
 if TYPE_CHECKING:
     from neoagent.v2.abc import WorkingMemoryStore
+    from neoagent.v2.compressed_store import CompressedMessageStore
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,19 @@ class NeoAgent:
             priority=0, is_static=True,
         ))
 
+        # ── v2: LayeredPromptBuilder — owns ephemeral layers (WM, compressed_history,
+        #   memory_context) rendered per-turn via QueryLoop.
+        from neoagent.v2.schema import Layer
+        self._layered_prompt_builder = LayeredPromptBuilder()
+        self._layered_prompt_builder.register_layer_section(
+            Layer.IDENTITY,
+            PromptSection(
+                name="identity",
+                content=config.system_prompt or "You are neoagent, a helpful AI assistant.",
+                priority=0,
+            ),
+        )
+
         # ── v2: WorkingMemoryStore ────────────────────────────────────────────
         if config.wm_store is None:
             from neoagent.v2.stores import InMemoryWorkingMemoryStore
@@ -72,10 +86,16 @@ class NeoAgent:
 
         # ── v2: ContextCompressor with strategy + event_bus ──────────────────
         from neoagent.core.compress import ContextCompressor
+        from neoagent.v2.compressed_store import CompressedMessageStore, InMemoryCompressedMessageStore
+        self._compressed_store: "CompressedMessageStore" = (
+            config.compressed_message_store
+            or InMemoryCompressedMessageStore()
+        )
         self._compressor = ContextCompressor(
             provider=self._provider,
             strategy=config.compression_strategy,
             event_bus=self._event_bus,
+            compressed_store=self._compressed_store,
         )
 
         self._loop = QueryLoop(
@@ -89,6 +109,8 @@ class NeoAgent:
             hook_manager=self._hook_manager,
             deferred_registry=self._deferred_registry,
             wm_store=self._wm_store,
+            layered_prompt_builder=self._layered_prompt_builder,
+            compressed_store=self._compressed_store,
         )
         # Replace the compressor created internally by QueryLoop so that
         # strategy and event_bus are forwarded (QueryLoop creates its own compressor
@@ -172,12 +194,21 @@ class NeoAgent:
         """Expose the WorkingMemoryStore for inspection and external use."""
         return self._wm_store
 
+    @property
+    def compressed_store(self) -> "CompressedMessageStore":
+        """Expose the CompressedMessageStore for tool wiring and external use."""
+        return self._compressed_store
+
     def register_tool(self, tool: BaseTool) -> None:
         self._registry.register(tool)
 
     def new_session(self, session_id: str | None = None) -> Session:
         """Create a new empty session."""
-        return Session.create(session_id)
+        from neoagent.v2.compressed_store import InMemoryCompressedMessageStore
+        session = Session.create(session_id)
+        if isinstance(self._compressed_store, InMemoryCompressedMessageStore):
+            self._compressed_store.bind_session(session.id, session.state.compressed_messages)
+        return session
 
     def resume(self, session_id: str, validate: bool = True) -> Session:
         """Load an existing session from storage.
@@ -192,6 +223,9 @@ class NeoAgent:
         if self._storage is None:
             raise RuntimeError("No SessionStorage configured. Pass storage= to NeoAgent.")
         session = Session.resume(session_id, self._storage)
+        from neoagent.v2.compressed_store import InMemoryCompressedMessageStore
+        if isinstance(self._compressed_store, InMemoryCompressedMessageStore):
+            self._compressed_store.bind_session(session.id, session.state.compressed_messages)
         if validate:
             self._validate_resume(session)
         return session
@@ -230,16 +264,33 @@ class NeoAgent:
         _temp = session is None
         if _temp:
             session = Session.create()
-        # Assign msg_id so recall_turn / compressor can find this user input later.
+        # Increment session-global user-turn counter BEFORE stamping the user message.
+        # All Messages created during this chat() call will share this turn value.
+        session.state.user_turn_counter += 1
+        _current_user_turn = session.state.user_turn_counter
+        # Assign msg_id + user_turn so recall_turn / compressor can find this user
+        # input later. turn=_current_user_turn is the session-global counter value.
         _user_msg_id = session.state.id_gen.next_msg_id()
-        session.messages.append(Message(id=_user_msg_id, role="user", content=message))
+        session.messages.append(Message(id=_user_msg_id, turn=_current_user_turn, role="user", content=message))
+        self._event_bus.emit(MessageCreatedEvent(
+            session_id=session.id,
+            msg_id=_user_msg_id,
+            turn=_current_user_turn,
+            role="user",
+            source_type="user_input",
+            content=message,
+        ))
         if not _temp and self._storage is not None:
             session.bind_storage(self._storage)
         self._current_session = session
         try:
-            result = await self._loop.run(session=session)
+            result = await self._loop.run(session=session, user_turn=_current_user_turn)
         finally:
             self._current_session = None
+        # Increment turns_since_last_compression after each successful chat().
+        # (Compression resets it to 0 inside compress.py's strategy path;
+        #  we only increment here when the call completed without exception.)
+        session.state.turns_since_last_compression += 1
         if not _temp and self._storage is not None:
             session.save(self._storage)
         if result.turns:

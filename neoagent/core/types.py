@@ -29,6 +29,9 @@ class Message(BaseModel):
     # Optional for backward compatibility — older messages and Anthropic-native
     # construction won't have it; recall_turn / compression rely on it where set.
     id: str | None = None
+    # turn: session-local turn index (0-based, matches TurnCompleteEvent.turn_index).
+    # Assigned by QueryLoop at the same time as `id`. Optional for backward compat.
+    turn: int | None = None
     role: Literal["user", "assistant"]
     content: str | list[ContentBlock]
 

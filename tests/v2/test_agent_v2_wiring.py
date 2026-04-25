@@ -111,7 +111,7 @@ class TestNeoAgentAssembly:
         class _StubStrategy(CompressionStrategy):
             async def compress(self, context):
                 from neoagent.v2.schema import CompressionDelta
-                return CompressionDelta(batch_summary="stub", batch_members=[], working_memory_delta=[])
+                return CompressionDelta(batch_members=[], working_memory_delta=[])
 
         strategy = _StubStrategy()
         cfg = _make_config(compression_strategy=strategy)

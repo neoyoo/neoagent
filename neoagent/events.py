@@ -59,6 +59,7 @@ class CompressCheckEvent(Event):
     tool_tokens: int
     budget: int
     should_compress: bool
+    reason: str = ""
 
 
 @dataclass(frozen=True)

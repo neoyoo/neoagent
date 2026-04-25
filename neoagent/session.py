@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from neoagent.core.types import Message, TextBlock, ToolUseBlock, ToolResultBlock
-from neoagent.v2.schema import WorkingMemory
+from neoagent.v2.schema import Batch, WorkingMemory
 from neoagent.v2.id_gen import SessionIdGenerator
 from neoagent.v2.nudge import NudgeCounter
 
@@ -47,6 +47,20 @@ class SessionState:
     id_gen: SessionIdGenerator = field(default_factory=SessionIdGenerator)
     # Turn counter; triggers MemoryReview every threshold turns (Phase 7).
     nudge_counter: NudgeCounter = field(default_factory=NudgeCounter)
+    # Messages physically removed from `session.messages` during compression.
+    # recall_turn merges this with live messages when looking up msg_id → Message.
+    compressed_messages: list[Message] = field(default_factory=list)
+    # Compression batches (each Batch describes one compression round).
+    # Promoted from dynamic attribute (formerly set via object.__setattr__ in compress.py).
+    batches: list[Batch] = field(default_factory=list)
+    # Tracks user-initiated turns since last compression ran, for the
+    # "every 10 turns" trigger (B2 uses this).
+    turns_since_last_compression: int = 0
+    # Session-global user-turn counter. Incremented once per chat() invocation.
+    # All Messages created in that invocation share the same value (Message.turn = this).
+    # DIFFERENT from the loop's internal turn_idx, which counts tool-round-trip iterations
+    # within one user turn.
+    user_turn_counter: int = 0
 
 
 @dataclass
@@ -172,6 +186,8 @@ def _message_to_dict(msg: Message) -> dict:
     out: dict = {"role": msg.role}
     if msg.id is not None:
         out["id"] = msg.id
+    if msg.turn is not None:
+        out["turn"] = msg.turn
     if isinstance(msg.content, str):
         out["content"] = msg.content
         return out
@@ -190,9 +206,10 @@ def _message_to_dict(msg: Message) -> dict:
 
 def _message_from_dict(d: dict) -> Message:
     msg_id = d.get("id")
+    msg_turn = d.get("turn")
     content = d["content"]
     if isinstance(content, str):
-        return Message(id=msg_id, role=d["role"], content=content)
+        return Message(id=msg_id, turn=msg_turn, role=d["role"], content=content)
     blocks = []
     for b in content:
         t = b["type"]
@@ -203,7 +220,7 @@ def _message_from_dict(d: dict) -> Message:
         elif t == "tool_result":
             blocks.append(ToolResultBlock(tool_use_id=b["tool_use_id"],
                                           content=b["content"], is_error=b.get("is_error", False)))
-    return Message(id=msg_id, role=d["role"], content=blocks)
+    return Message(id=msg_id, turn=msg_turn, role=d["role"], content=blocks)
 
 
 def _wm_to_dict(wm: WorkingMemory) -> dict:
@@ -278,10 +295,56 @@ def _session_to_dict(session: Session) -> dict:
                 "threshold": nc.threshold,
                 "_count": nc._count,
             },
+            # v2 Batch B1 fields
+            "compressed_messages": [_message_to_dict(m) for m in session.state.compressed_messages],
+            "batches": [_batch_to_dict(b) for b in session.state.batches],
+            "turns_since_last_compression": session.state.turns_since_last_compression,
+            # v2 Batch B2a fields
+            "user_turn_counter": session.state.user_turn_counter,
         },
         "messages": [_message_to_dict(m) for m in session.messages],
         "metadata": session.metadata,
     }
+
+
+def _batch_to_dict(batch: "Batch") -> dict:
+    """Serialize a Batch to a JSON-safe dict (datetime → ISO 8601 string)."""
+    return {
+        "session_id": batch.session_id,
+        "batch_id": batch.batch_id,
+        "turns_from": batch.turns_from,
+        "turns_to": batch.turns_to,
+        "time_from": batch.time_from.isoformat(),
+        "time_to": batch.time_to.isoformat(),
+        "summary": batch.summary,
+        "members": [
+            {"id": m.id, "role": m.role, "preview": m.preview, "turn": m.turn}
+            for m in batch.members
+        ],
+        "trigger": batch.trigger,
+        "created_at": batch.created_at.isoformat(),
+    }
+
+
+def _batch_from_dict(d: dict) -> "Batch":
+    """Deserialize a Batch from a dict produced by _batch_to_dict."""
+    from neoagent.v2.schema import BatchMember
+    members = [
+        BatchMember(id=m["id"], role=m["role"], preview=m["preview"], turn=m.get("turn"))
+        for m in d.get("members", [])
+    ]
+    return Batch(
+        session_id=d["session_id"],
+        batch_id=d["batch_id"],
+        turns_from=d["turns_from"],
+        turns_to=d["turns_to"],
+        time_from=datetime.fromisoformat(d["time_from"]),
+        time_to=datetime.fromisoformat(d["time_to"]),
+        summary=d["summary"],
+        members=members,
+        trigger=d["trigger"],
+        created_at=datetime.fromisoformat(d["created_at"]),
+    )
 
 
 def _session_from_dict(data: dict) -> Session:
@@ -320,6 +383,20 @@ def _session_from_dict(data: dict) -> Session:
     else:
         nudge_counter = NudgeCounter()
 
+    # v2 Batch B1: compressed_messages — empty list if missing (backward compat)
+    _compressed_msgs_raw = state_d.get("compressed_messages", [])
+    compressed_messages = [_message_from_dict(m) for m in _compressed_msgs_raw]
+
+    # v2 Batch B1: batches — empty list if missing (backward compat)
+    _batches_raw = state_d.get("batches", [])
+    batches = [_batch_from_dict(b) for b in _batches_raw]
+
+    # v2 Batch B1: turns_since_last_compression — 0 if missing (backward compat)
+    turns_since_last_compression = state_d.get("turns_since_last_compression", 0)
+
+    # v2 Batch B2a: user_turn_counter — 0 if missing (backward compat)
+    user_turn_counter = state_d.get("user_turn_counter", 0)
+
     state = SessionState(
         previous_summary=state_d.get("previous_summary"),
         compression_failures=state_d.get("compression_failures", 0),
@@ -333,6 +410,10 @@ def _session_from_dict(data: dict) -> Session:
         _current_wm=_current_wm,
         id_gen=id_gen,
         nudge_counter=nudge_counter,
+        compressed_messages=compressed_messages,
+        batches=batches,
+        turns_since_last_compression=turns_since_last_compression,
+        user_turn_counter=user_turn_counter,
     )
     messages = [_message_from_dict(m) for m in data.get("messages", [])]
     return Session(

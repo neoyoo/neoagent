@@ -25,10 +25,10 @@ HARD_CONSTRAINTS_CONTENT = """<HARD_CONSTRAINTS>
    - tool_use_ids 必须全部存在于 <freed_tool_results> 清单
    - 不存在的 id 会导致工具调用返回 error（框架拒绝）
 
-2. recall_turn(turn_ids=[...])
-   - 当 messages 流中出现 <compressed_history> 时，该消息代表已压缩的对话历史
-   - 可通过 recall_turn(turn_ids=["m01", "m02", ...]) 批量恢复若干条原始消息的完整内容
-   - turn_ids 必须全部存在于 <compressed_history> 的 <recoverable> 清单
+2. recall_turn(msg_ids=[...])
+   - 当 system prompt 中出现 <compressed_history> 时，代表有被压缩掉的对话历史
+   - 可通过 recall_turn(msg_ids=["m1", "m2", ...]) 批量恢复若干条原始消息的完整内容
+   - msg_ids 必须全部存在于 <compressed_history> 的 <recoverable> 清单（每条 <msg id="mN" .../> 的 id 属性值）
    - 不存在的 id 会导致工具调用返回 error（框架拒绝）
 
 3. update_working_memory(field, value, op, item_id)

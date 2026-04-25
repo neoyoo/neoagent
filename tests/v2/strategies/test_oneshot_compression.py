@@ -89,16 +89,8 @@ def _mock_llm_response(json_payload: Any) -> MagicMock:
 
 
 def _valid_delta_json() -> dict:
-    """A fully compliant CompressionDelta JSON payload."""
+    """A fully compliant CompressionDelta JSON payload (Bug #2: no batch_summary)."""
     return {
-        "batch_summary": {
-            "CONSTRAINTS_AND_PREFERENCES": ["c01: use JWT"],
-            "PROGRESS": "login done",
-            "KEY_DECISIONS": ["d01: use FastAPI", "d02: 24h token"],
-            "RELEVANT_FILES": ["f01: auth.py"],
-            "NEXT_STEPS": ["n01: write tests"],
-            "CRITICAL_CONTEXT": "HTTPS in prod",
-        },
         "batch_members": [
             {"id": "m1", "role": "user", "preview": "Hello greeting message"},
             {"id": "m2", "role": "assistant", "preview": "World response back"},
@@ -128,7 +120,7 @@ class TestRuleValidation:
             result = await strategy.compress(_make_context())
 
         assert isinstance(result, CompressionDelta)
-        assert result.batch_summary == payload["batch_summary"]
+        assert result.batch_summary is None  # Bug #2: summary no longer populated
         assert len(result.batch_members) == 3
         assert result.batch_members[0] == BatchMember(
             id="m1", role="user", preview="Hello greeting message"
@@ -150,7 +142,7 @@ class TestRuleValidation:
             result = await strategy.compress(_make_context())
 
         assert result.working_memory_delta == []
-        assert result.batch_summary == payload["batch_summary"]
+        assert result.batch_summary is None  # Bug #2: summary deprecated
 
     async def test_03_rule2_violation_invalid_role_drops_wm_delta(self):
         """Rule 2: role='admin' not in valid set → wm_delta dropped."""
@@ -165,7 +157,7 @@ class TestRuleValidation:
             result = await strategy.compress(_make_context())
 
         assert result.working_memory_delta == []
-        assert result.batch_summary == payload["batch_summary"]
+        assert result.batch_summary is None  # Bug #2: summary deprecated
 
     async def test_04_rule3_violation_scalar_field_with_append_drops_wm_delta(self):
         """Rule 3: progress (scalar) with op='append' is forbidden → wm_delta dropped.
@@ -185,7 +177,7 @@ class TestRuleValidation:
             result = await strategy.compress(_make_context())
 
         assert result.working_memory_delta == []
-        assert result.batch_summary == payload["batch_summary"]
+        assert result.batch_summary is None  # Bug #2: summary deprecated
         assert len(result.batch_members) == 3  # batch_members preserved
 
     async def test_05_rule4a_violation_list_value_missing_prefix_drops_wm_delta(self):
@@ -203,7 +195,7 @@ class TestRuleValidation:
             result = await strategy.compress(_make_context())
 
         assert result.working_memory_delta == []
-        assert result.batch_summary == payload["batch_summary"]
+        assert result.batch_summary is None  # Bug #2: summary deprecated
 
     async def test_06_rule4b_violation_remove_without_item_id_drops_wm_delta(self):
         """Rule 4b: remove op on list field without item_id → wm_delta dropped."""
@@ -221,7 +213,7 @@ class TestRuleValidation:
             result = await strategy.compress(_make_context())
 
         assert result.working_memory_delta == []
-        assert result.batch_summary == payload["batch_summary"]
+        assert result.batch_summary is None  # Bug #2: summary deprecated
 
 
 # ── B. Degrade behaviour ──────────────────────────────────────────────────────
@@ -244,13 +236,12 @@ class TestDegradeBehaviour:
 
         assert isinstance(result, CompressionDelta)  # no raise
 
-    async def test_09_batch_summary_preserved_on_wm_delta_drop(self):
-        """batch_summary must be preserved even when wm_delta is dropped (rule 1 violation)."""
+    async def test_09_wm_delta_dropped_on_rule1_violation(self):
+        """wm_delta is dropped on rule 1 violation; batch_summary stays None (Bug #2)."""
         strategy = _make_strategy()
         payload = _valid_delta_json()
         # Rule 1 violation: unknown member id
         payload["batch_members"] = [{"id": "m99", "role": "user", "preview": "orphan"}]
-        expected_summary = payload["batch_summary"]
 
         with patch.object(
             strategy._client.messages, "create",
@@ -258,7 +249,7 @@ class TestDegradeBehaviour:
         ):
             result = await strategy.compress(_make_context())
 
-        assert result.batch_summary == expected_summary
+        assert result.batch_summary is None  # Bug #2: summary deprecated
         assert result.working_memory_delta == []
 
 
@@ -343,12 +334,12 @@ class TestPromptConstruction:
         assert "preview" in prompt
 
     def test_14_prompt_contains_json_schema_top_level_keys(self):
-        """_build_prompt must include all 3 top-level C4 JSON schema keys."""
+        """_build_prompt must include batch_members + working_memory_delta; NOT batch_summary (Bug #2)."""
         strategy = _make_strategy()
         ctx = _make_context()
         prompt = strategy._build_prompt(ctx)
 
-        assert '"batch_summary"' in prompt
+        assert '"batch_summary"' not in prompt  # Bug #2: removed
         assert '"batch_members"' in prompt
         assert '"working_memory_delta"' in prompt
 
@@ -419,7 +410,7 @@ class TestEdgeCases:
         """A response missing 'batch_members' top-level key triggers retry."""
         strategy = _make_strategy()
 
-        incomplete = {"batch_summary": {}, "working_memory_delta": []}
+        incomplete = {"working_memory_delta": []}  # missing batch_members
         # Missing batch_members
         bad_response = MagicMock()
         _bad = MagicMock(text=json.dumps(incomplete))

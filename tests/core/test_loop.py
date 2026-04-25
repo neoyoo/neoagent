@@ -338,13 +338,13 @@ async def test_loop_emits_compress_fallback_event_on_llm_failure():
     # Mock the compressor to simulate a fallback (failure count increases)
     original_compress = loop._compressor.compress
 
-    async def mock_compress(messages, budget, session_state=None):
+    async def mock_compress(messages, budget, session_state=None, compress_reason="token_threshold", session_id=None):
         if session_state:
             session_state.compression_failures += 1  # simulate failure
         return messages  # return as-is (truncation fallback)
 
     loop._compressor.compress = mock_compress
-    loop._compressor.should_compress = lambda msgs, schemas, budget: True  # always compress
+    loop._compressor.should_compress = lambda msgs, schemas, budget, turns_since_last_compression=0: (True, "token_threshold")  # always compress
 
     await loop.run(session=session)
 

@@ -43,14 +43,16 @@ class BatchMember:
     id: str                                     # "m5" / "t7", must be original msg_id
     role: Literal["user", "assistant", "tool"]
     preview: str                                # compressor-generated, 20-40 chars
+    turn: int | None = None                     # session-global user-turn index (B2b+); None = legacy
 
 
 @dataclass
 class CompressionDelta:
     """spec § 10.2, lines 1604-1630"""
-    batch_summary: str                          # 7-section structured text
     batch_members: list[BatchMember]
     working_memory_delta: list[dict]            # [{field, op, value, item_id?}]
+    # Deprecated: batch_summary was display-only and duplicated WM. New deltas have batch_summary=None.
+    batch_summary: str | dict | None = None
 
 
 @dataclass
@@ -72,10 +74,11 @@ class Batch:
     turns_to: int
     time_from: datetime
     time_to: datetime
-    summary: str
-    members: list[BatchMember]
-    trigger: str
-    created_at: datetime
+    # Deprecated: summary was display-only and duplicated WM. New batches have summary=None.
+    summary: str | dict | None = None
+    members: list[BatchMember] = field(default_factory=list)
+    trigger: str = ""
+    created_at: datetime = field(default_factory=datetime.now)
 
 
 @dataclass

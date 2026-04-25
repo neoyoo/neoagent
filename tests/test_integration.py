@@ -187,21 +187,27 @@ class TestCompressionThreshold:
         provider = MockProvider([])
         compressor = ContextCompressor(provider=provider)
         # Short message, huge budget → no compress
-        assert compressor.should_compress(
+        should, reason = compressor.should_compress(
             [Message(role="user", content="Hi")], [], context_budget=100_000
-        ) is False
+        )
+        assert should is False
+        assert reason == ""
         # Long message, tiny budget → compress
-        assert compressor.should_compress(
+        should, reason = compressor.should_compress(
             [Message(role="user", content="word " * 500)], [], context_budget=50
-        ) is True
+        )
+        assert should is True
+        assert reason == "token_threshold"
 
     def test_tools_schema_counted(self):
         provider = MockProvider([])
         compressor = ContextCompressor(provider=provider)
         big_schemas = [{"name": f"t{i}", "description": "x" * 200, "input_schema": {}} for i in range(10)]
-        assert compressor.should_compress(
+        should, reason = compressor.should_compress(
             [Message(role="user", content="short")], big_schemas, context_budget=50
-        ) is True
+        )
+        assert should is True
+        assert reason == "token_threshold"
 
 
 # --- Full suite run ---

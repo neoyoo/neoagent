@@ -208,20 +208,53 @@ class LayeredPromptBuilder:
             lines.append(
                 f'  <batch id="{batch.batch_id}" turns="{batch.turns_from}-{batch.turns_to}">'
             )
-            lines.append("    <summary>")
-            for summary_line in batch.summary.splitlines():
-                lines.append(f"      {summary_line}")
-            lines.append("    </summary>")
             if batch.members:
                 lines.append("    <recoverable>")
-                for member in batch.members:
-                    lines.append(
-                        f'      <msg id="{member.id}" role="{member.role}" preview="{member.preview}" />'
-                    )
+                lines.extend(self._render_recoverable_turn_grouped(batch.members))
                 lines.append("    </recoverable>")
             lines.append("  </batch>")
         lines.append("</compressed_history>")
         return "\n".join(lines)
+
+    def _render_recoverable_turn_grouped(self, members: list) -> list[str]:
+        """Group BatchMembers by turn and render nested <turn> elements.
+
+        Members with turn=None → <turn n="unknown">.
+        Members with turn=int → <turn n="{int}">.
+        Turn groups appear in ascending numeric order; unknown group first.
+        Within a group, member order is preserved.
+        """
+        from collections import defaultdict
+
+        # Collect groups preserving member order
+        # group key: int | None
+        groups: dict = defaultdict(list)
+        group_order: list = []
+        seen: set = set()
+
+        for member in members:
+            t = getattr(member, "turn", None)
+            if t not in seen:
+                seen.add(t)
+                group_order.append(t)
+            groups[t].append(member)
+
+        # Sort: None first, then ascending int
+        sorted_turns: list = []
+        if None in group_order:
+            sorted_turns.append(None)
+        sorted_turns.extend(sorted(t for t in group_order if t is not None))
+
+        lines: list[str] = []
+        for t in sorted_turns:
+            turn_attr = "unknown" if t is None else str(t)
+            lines.append(f'      <turn n="{turn_attr}">')
+            for member in groups[t]:
+                lines.append(
+                    f'        <msg id="{member.id}" role="{member.role}" preview="{member.preview}" />'
+                )
+            lines.append("      </turn>")
+        return lines
 
     def _render_memory_context(self, entries: "list[MemoryEntry]") -> str:
         lines: list[str] = ["<memory-context>"]

@@ -20,8 +20,9 @@ if TYPE_CHECKING:
     from neoagent.hooks import HookManager
     from neoagent.tools.deferred import DeferredToolRegistry
     from neoagent.v2.abc import WorkingMemoryStore
+    from neoagent.v2.compressed_store import CompressedMessageStore
 
-from neoagent.core.prompt import PromptBuilder, PromptSection
+from neoagent.core.prompt import LayeredPromptBuilder, PromptBuilder, PromptSection
 from neoagent.core.types import ConversationResult, Message, TextBlock, ToolCall, ToolResult, ToolResultBlock, Turn
 from neoagent.providers.base import Provider, Response
 from neoagent.tools.registry import ToolRegistry
@@ -37,19 +38,23 @@ class QueryLoop:
                  tool_executor: "ToolExecutor | None" = None,
                  hook_manager: "HookManager | None" = None,
                  deferred_registry: "DeferredToolRegistry | None" = None,
-                 wm_store: "WorkingMemoryStore | None" = None):
+                 wm_store: "WorkingMemoryStore | None" = None,
+                 layered_prompt_builder: "LayeredPromptBuilder | None" = None,
+                 compressed_store: "CompressedMessageStore | None" = None):
         self._provider = provider
         self._registry = tool_registry
         self._executor = tool_executor
         self._prompt_builder = prompt_builder
+        self._layered_prompt_builder = layered_prompt_builder
         self.max_turns = max_turns
         self.context_budget = context_budget if context_budget > 0 else provider.get_context_window()
-        self._compressor = ContextCompressor(provider=provider)
+        self._compressor = ContextCompressor(provider=provider, compressed_store=compressed_store)
         self._memory_manager = memory_manager
         self._bus = event_bus if event_bus is not None else EventBus()
         self._hook_manager = hook_manager
         self._deferred_registry = deferred_registry
         self._wm_store = wm_store
+        self._compressed_store = compressed_store
 
     async def run(
         self,
@@ -57,6 +62,7 @@ class QueryLoop:
         *,
         session: "Session | None" = None,
         max_turns: int | None = None,
+        user_turn: int | None = None,
     ) -> ConversationResult:
         """Run the query loop.
 
@@ -97,24 +103,38 @@ class QueryLoop:
         _set_sess(_session)
 
         turns: list[Turn] = []
+        # msg_turn: the session-global user turn value stamped on all Messages.
+        # If user_turn is provided (from chat()), use that; else fall back to turn_idx
+        # for back-compat with internal/legacy callers.
         effective_max_turns = max_turns if max_turns is not None else self.max_turns
         for turn_idx in range(effective_max_turns):
+            msg_turn = user_turn if user_turn is not None else turn_idx
             schemas = self._registry.get_schemas()
-            should_compress = self._compressor.should_compress(msgs, schemas, self.context_budget)
+            turns_since = session_state.turns_since_last_compression if session_state else 0
+            should, compress_reason = self._compressor.should_compress(
+                msgs, schemas, self.context_budget,
+                turns_since_last_compression=turns_since,
+            )
             msg_tokens = self._compressor.estimate_tokens(msgs)
             tool_tokens = self._compressor.estimate_tools_tokens(schemas)
             self._bus.emit(CompressCheckEvent(
                 msg_tokens=msg_tokens, tool_tokens=tool_tokens,
-                budget=self.context_budget, should_compress=should_compress,
+                budget=self.context_budget, should_compress=should,
+                reason=compress_reason,
             ))
-            if should_compress:
+            if should:
                 old_summary = session_state.previous_summary if session_state else None
                 failures_before = session_state.compression_failures if session_state else 0
-                compressed = await self._compressor.compress(msgs, self.context_budget, session_state=session_state)
-                # Sync back: replace session messages with compressed list
-                _session.messages.clear()
-                _session.messages.extend(compressed)
-                msgs = _session.messages
+                to_keep = await self._compressor.compress(msgs, self.context_budget, session_state=session_state, compress_reason=compress_reason, session_id=_session.id)
+                if to_keep is None:
+                    # Nothing to compress (fewer than 5 user turns in to_compress);
+                    # reset the turn counter to avoid tight-loop re-triggering.
+                    if session_state:
+                        session_state.turns_since_last_compression = 0
+                else:
+                    # In-place replace preserves any external references to the list
+                    _session.messages[:] = to_keep
+                    msgs = _session.messages
                 failures_after = session_state.compression_failures if session_state else 0
                 if failures_after > failures_before:
                     # LLM compress failed — truncation fallback was used
@@ -185,6 +205,18 @@ class QueryLoop:
 
             try:
                 system = self._prompt_builder.build()
+                # B3: append ephemeral layers (WM + compressed_history + memory_context)
+                # from LayeredPromptBuilder every turn — must be re-built each turn since
+                # batches change on compression and WM changes frequently.
+                if self._layered_prompt_builder is not None:
+                    _wm = session_state._current_wm if session_state else None
+                    _batches = session_state.batches if session_state else []
+                    ephemeral = self._layered_prompt_builder.build_ephemeral(
+                        wm=_wm,
+                        batches=_batches,
+                    )
+                    if ephemeral.strip():
+                        system = system + "\n\n" + ephemeral
             finally:
                 # Always clean up per-turn sections regardless of success/failure
                 if _deferred_injected:
@@ -307,12 +339,12 @@ class QueryLoop:
                     self._bus.emit(MessageCreatedEvent(
                         session_id=_session.id,
                         msg_id=_msg_id,
-                        turn=turn_idx,
+                        turn=msg_turn,
                         role="assistant",
                         source_type="assistant_reply",
                         content=list(response.content),
                     ))
-                msgs.append(Message(id=_msg_id, role="assistant", content=response.content))
+                msgs.append(Message(id=_msg_id, turn=msg_turn, role="assistant", content=response.content))
                 if session_state:
                     session_state.recalled_this_turn.clear()
                 _session.save_if_storage()  # per-turn auto-save (end_turn)
@@ -326,13 +358,13 @@ class QueryLoop:
             if self._memory_manager:
                 self._memory_manager.record_tool_calls(len(tool_calls), session_state=session_state)
             _assistant_msg_id = session_state.id_gen.next_msg_id() if session_state else None
-            assistant_msg = Message(id=_assistant_msg_id, role="assistant", content=response.content)
+            assistant_msg = Message(id=_assistant_msg_id, turn=msg_turn, role="assistant", content=response.content)
             # Task 4.4: Emit MessageCreatedEvent for assistant_reply (tool_use path)
             if session_state:
                 self._bus.emit(MessageCreatedEvent(
                     session_id=_session.id,
                     msg_id=_assistant_msg_id,
-                    turn=turn_idx,
+                    turn=msg_turn,
                     role="assistant",
                     source_type="assistant_reply",
                     content=list(response.content),
@@ -340,7 +372,7 @@ class QueryLoop:
             msgs.append(assistant_msg)
             tool_result_blocks = [ToolResultBlock(tool_use_id=r.call_id, content=r.output, is_error=r.is_error) for r in results]
             _tool_result_msg_id = session_state.id_gen.next_msg_id() if session_state else None
-            result_msg = Message(id=_tool_result_msg_id, role="user", content=tool_result_blocks)
+            result_msg = Message(id=_tool_result_msg_id, turn=msg_turn, role="user", content=tool_result_blocks)
             msgs.append(result_msg)
             # Record tool_use_id → tool_name mapping (used by free_tool_result tool and events).
             # Must be populated before emitting ToolResultPersistedEvent.
@@ -352,7 +384,7 @@ class QueryLoop:
                 self._bus.emit(MessageCreatedEvent(
                     session_id=_session.id,
                     msg_id=_tool_result_msg_id,
-                    turn=turn_idx,
+                    turn=msg_turn,
                     role="user",
                     source_type="tool_result",
                     content=list(tool_result_blocks),
@@ -362,7 +394,7 @@ class QueryLoop:
                     self._bus.emit(ToolResultPersistedEvent(
                         session_id=_session.id,
                         tool_use_id=r.call_id,
-                        turn=turn_idx,
+                        turn=msg_turn,
                         tool_name=tool_name_for_event,
                         output=r.output,
                         size_bytes=len(r.output.encode("utf-8")),

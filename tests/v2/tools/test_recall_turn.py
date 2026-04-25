@@ -40,7 +40,7 @@ class TestSingleIdHit:
         tool = _make_tool(msgs)
 
         from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        result = await tool.execute(RecallTurnInput(turn_ids=["m1"]))
+        result = await tool.execute(RecallTurnInput(msg_ids=["m1"]))
 
         assert result.is_error is False
         data = json.loads(result.output)
@@ -60,7 +60,7 @@ class TestPartialMiss:
         tool = _make_tool(msgs)
 
         from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        result = await tool.execute(RecallTurnInput(turn_ids=["m1", "m99"]))
+        result = await tool.execute(RecallTurnInput(msg_ids=["m1", "m99"]))
 
         assert result.is_error is False
         data = json.loads(result.output)
@@ -77,7 +77,7 @@ class TestPartialMiss:
         tool = _make_tool(msgs)
 
         from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        result = await tool.execute(RecallTurnInput(turn_ids=["m3", "m4"]))
+        result = await tool.execute(RecallTurnInput(msg_ids=["m3", "m4"]))
 
         assert result.is_error is False
         data = json.loads(result.output)
@@ -95,7 +95,7 @@ class TestAllMissing:
         tool = _make_tool(msgs)
 
         from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        result = await tool.execute(RecallTurnInput(turn_ids=["x1", "x2"]))
+        result = await tool.execute(RecallTurnInput(msg_ids=["x1", "x2"]))
 
         assert result.is_error is False
         data = json.loads(result.output)
@@ -104,27 +104,27 @@ class TestAllMissing:
         assert "x2" in data["missing"]
 
 
-# ── 4. empty turn_ids ─────────────────────────────────────────────────────────
+# ── 4. empty msg_ids ─────────────────────────────────────────────────────────
 
 class TestEmptyTurnIds:
     @pytest.mark.asyncio
-    async def test_empty_turn_ids_returns_empty_recalled(self):
+    async def test_empty_msg_ids_returns_empty_recalled(self):
         msgs = [Message(id="m1", role="user", content="msg1")]
         tool = _make_tool(msgs)
 
         from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        result = await tool.execute(RecallTurnInput(turn_ids=[]))
+        result = await tool.execute(RecallTurnInput(msg_ids=[]))
 
         assert result.is_error is False
         data = json.loads(result.output)
         assert data["recalled"] == []
 
     @pytest.mark.asyncio
-    async def test_empty_turn_ids_no_messages_still_ok(self):
+    async def test_empty_msg_ids_no_messages_still_ok(self):
         tool = _make_tool([])
 
         from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        result = await tool.execute(RecallTurnInput(turn_ids=[]))
+        result = await tool.execute(RecallTurnInput(msg_ids=[]))
 
         assert result.is_error is False
         data = json.loads(result.output)
@@ -142,7 +142,7 @@ class TestListContent:
         tool = _make_tool(msgs)
 
         from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        result = await tool.execute(RecallTurnInput(turn_ids=["m1"]))
+        result = await tool.execute(RecallTurnInput(msg_ids=["m1"]))
 
         assert result.is_error is False
         data = json.loads(result.output)
@@ -161,7 +161,7 @@ class TestListContent:
         tool = _make_tool(msgs)
 
         from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        result = await tool.execute(RecallTurnInput(turn_ids=["m2"]))
+        result = await tool.execute(RecallTurnInput(msg_ids=["m2"]))
 
         assert result.is_error is False
         data = json.loads(result.output)
@@ -180,7 +180,7 @@ class TestListContent:
         tool = _make_tool(msgs)
 
         from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        result = await tool.execute(RecallTurnInput(turn_ids=["m3"]))
+        result = await tool.execute(RecallTurnInput(msg_ids=["m3"]))
 
         assert result.is_error is False
         data = json.loads(result.output)
@@ -202,7 +202,7 @@ class TestMissingMessagesAttr:
 
         tool = RecallTurnTool(session_ref=lambda: BrokenRef())
         from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        result = await tool.execute(RecallTurnInput(turn_ids=["m1"]))
+        result = await tool.execute(RecallTurnInput(msg_ids=["m1"]))
 
         assert result.is_error is True
         assert "missing" in result.output.lower() or "messages" in result.output.lower()
@@ -219,7 +219,7 @@ class TestMissingMessagesAttr:
 
         tool = RecallTurnTool(session_ref=lambda: StateWrapper())
         from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        result = await tool.execute(RecallTurnInput(turn_ids=["m1"]))
+        result = await tool.execute(RecallTurnInput(msg_ids=["m1"]))
 
         assert result.is_error is False
         data = json.loads(result.output)
@@ -239,9 +239,87 @@ class TestMessageWithoutId:
         tool = _make_tool(msgs)
 
         from neoagent.tools.builtin.recall_turn import RecallTurnInput
-        result = await tool.execute(RecallTurnInput(turn_ids=["m1"]))
+        result = await tool.execute(RecallTurnInput(msg_ids=["m1"]))
 
         assert result.is_error is False
         data = json.loads(result.output)
         assert len(data["recalled"]) == 1
         assert data["recalled"][0]["id"] == "m1"
+
+
+# ── 8. compressed_messages lookup (Phase 2 Batch B4) ─────────────────────────
+
+
+class FakeSessionWithCompressed:
+    """Session stub with both .messages and .state.compressed_messages."""
+
+    class _State:
+        def __init__(self, compressed: list[Message]):
+            self.compressed_messages = compressed
+
+    def __init__(self, messages: list[Message], compressed: list[Message]):
+        self.messages = messages
+        self.state = self._State(compressed)
+
+
+def _make_tool_with_compressed(
+    messages: list[Message] | None = None,
+    compressed: list[Message] | None = None,
+):
+    from neoagent.tools.builtin.recall_turn import RecallTurnTool
+    session = FakeSessionWithCompressed(
+        messages=messages or [],
+        compressed=compressed or [],
+    )
+    return RecallTurnTool(session_ref=lambda: session)
+
+
+class TestCompressedMessagesLookup:
+    @pytest.mark.asyncio
+    async def test_recall_finds_msg_in_compressed_messages_list(self):
+        """m9 only in compressed_messages → still returned by recall_turn."""
+        from neoagent.tools.builtin.recall_turn import RecallTurnInput
+
+        compressed = [Message(id="m9", role="user", content="foo")]
+        tool = _make_tool_with_compressed(messages=[], compressed=compressed)
+
+        result = await tool.execute(RecallTurnInput(msg_ids=["m9"]))
+
+        assert result.is_error is False
+        data = json.loads(result.output)
+        recalled = data["recalled"]
+        assert len(recalled) == 1
+        assert recalled[0]["id"] == "m9"
+        assert recalled[0]["content"] == "foo"
+
+    @pytest.mark.asyncio
+    async def test_recall_live_wins_on_id_collision(self):
+        """Same id in both lists: live (messages) copy wins over compressed."""
+        from neoagent.tools.builtin.recall_turn import RecallTurnInput
+
+        live_msg = Message(id="m5", role="user", content="live content X")
+        compressed_msg = Message(id="m5", role="user", content="compressed content Y")
+        tool = _make_tool_with_compressed(messages=[live_msg], compressed=[compressed_msg])
+
+        result = await tool.execute(RecallTurnInput(msg_ids=["m5"]))
+
+        assert result.is_error is False
+        data = json.loads(result.output)
+        assert data["recalled"][0]["content"] == "live content X"
+
+    @pytest.mark.asyncio
+    async def test_recall_missing_reports_if_in_neither(self):
+        """id not in live nor compressed → appears in 'missing' field."""
+        from neoagent.tools.builtin.recall_turn import RecallTurnInput
+
+        tool = _make_tool_with_compressed(
+            messages=[Message(id="m1", role="user", content="live")],
+            compressed=[Message(id="m2", role="user", content="compressed")],
+        )
+
+        result = await tool.execute(RecallTurnInput(msg_ids=["m99"]))
+
+        assert result.is_error is False
+        data = json.loads(result.output)
+        assert data["recalled"] == []
+        assert "m99" in data["missing"]

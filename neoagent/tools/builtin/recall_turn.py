@@ -8,28 +8,30 @@ permission = "auto" — LLM can call freely, no user confirmation needed.
 is_concurrent_safe = True — read-only, does not mutate session state.
 
 Returns the full original Message content (not BatchMember.preview) for each
-requested msg_id. Content is fetched from SessionState.messages by the `id`
-field that QueryLoop stamps onto every Message.
+requested msg_id. Content is fetched by the `id` field that QueryLoop stamps
+onto every Message.
 
 Scope:
-- Currently queries only session.messages. Once compression actually trims
-  the messages list (Phase 2 Batch B), compressed-out Message originals must
-  be retained elsewhere (e.g. SessionState.compressed_messages per spec § 2)
-  and merged into the lookup here.
+- Queries both `session.messages` (live window) and
+  `session_state.compressed_messages` (trimmed via compression). Live copies
+  win on id collision.
 """
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
 from neoagent.core.types import Message, TextBlock, ToolResultBlock, ToolUseBlock, ToolResult
 from neoagent.tools.base import BaseTool
 
+if TYPE_CHECKING:
+    from neoagent.v2.compressed_store import CompressedMessageStore
+
 
 class RecallTurnInput(BaseModel):
-    turn_ids: list[str]
+    msg_ids: list[str]
 
 
 def _serialize_content(content: Any) -> Any:
@@ -76,14 +78,19 @@ class RecallTurnTool(BaseTool):
     is_concurrent_safe = True
     returns_external_content = False
 
-    def __init__(self, session_ref):
+    def __init__(self, session_ref, store: "CompressedMessageStore | None" = None):
         """
         session_ref: zero-argument callable returning the current Session
         (or SessionState — both resolve to the same messages source here).
         Using a callable avoids holding a stale reference across turn
         boundaries / session resumes.
+
+        store: optional CompressedMessageStore for fetching compressed message
+        bodies. When provided, compressed lookup goes through the store instead
+        of reading session_state.compressed_messages directly.
         """
         self._get = session_ref
+        self._store = store
 
     async def execute(self, input: RecallTurnInput) -> ToolResult:  # type: ignore[override]
         obj = self._get()
@@ -103,11 +110,32 @@ class RecallTurnTool(BaseTool):
                 is_error=True,
             )
 
-        # Build id → Message index (skip messages without id, which are legacy
-        # or framework-injected without id tracking).
-        index: dict[str, Message] = {m.id: m for m in messages if m.id}
+        # Live messages index — always built from the live window.
+        live_index: dict[str, Message] = {m.id: m for m in messages if m.id}
 
-        if not input.turn_ids:
+        # Compressed messages — through store if available, else legacy fallback.
+        # Determine session_id for store lookup.
+        session_id: str | None = getattr(obj, "id", None)
+        if session_id is None and hasattr(obj, "state") and obj.state is not None:
+            wm = getattr(obj.state, "_current_wm", None)
+            if wm is not None:
+                session_id = getattr(wm, "session_id", None)
+
+        compressed_index: dict[str, Message] = {}
+        if self._store is not None and session_id and input.msg_ids:
+            compressed_index = await self._store.get_many(session_id, input.msg_ids)
+        elif hasattr(obj, "state") and hasattr(obj.state, "compressed_messages"):
+            # Legacy fallback when no store wired
+            compressed_index = {m.id: m for m in obj.state.compressed_messages if m.id}
+        elif hasattr(obj, "compressed_messages"):
+            compressed_index = {m.id: m for m in obj.compressed_messages if m.id}
+
+        # Build id → Message index. Compressed list goes in first; live list
+        # overwrites on collision so live copy always wins (per spec).
+        index: dict[str, Message] = compressed_index.copy()
+        index.update(live_index)
+
+        if not input.msg_ids:
             return ToolResult(
                 call_id="",
                 output=json.dumps({"recalled": [], "missing": []}, ensure_ascii=False),
@@ -116,7 +144,7 @@ class RecallTurnTool(BaseTool):
 
         recalled: list[dict] = []
         missing: list[str] = []
-        for tid in input.turn_ids:
+        for tid in input.msg_ids:
             msg = index.get(tid)
             if msg is None:
                 missing.append(tid)

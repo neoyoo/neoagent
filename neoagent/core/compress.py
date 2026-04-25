@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from neoagent.providers.base import Provider
     from neoagent.session import SessionState
     from neoagent.v2.abc import CompressionStrategy
+    from neoagent.v2.compressed_store import CompressedMessageStore
 
 logger = logging.getLogger(__name__)
 _KEEP_RECENT = 6
@@ -55,6 +56,7 @@ class ContextCompressor:
         tokenizer=None,
         strategy: "CompressionStrategy | None" = None,
         event_bus: "EventBus | None" = None,
+        compressed_store: "CompressedMessageStore | None" = None,
     ) -> None:
         self._provider = provider
         self._max_failures = max_failures
@@ -64,6 +66,7 @@ class ContextCompressor:
             self._enc = tiktoken.get_encoding("cl100k_base")
         self._strategy = strategy
         self._bus = event_bus
+        self._compressed_store = compressed_store
 
     def estimate_tokens(self, messages: list[Message]) -> int:
         total = 0
@@ -76,8 +79,19 @@ class ContextCompressor:
             return 0
         return len(self._enc.encode(json.dumps(schemas)))
 
-    def should_compress(self, messages: list[Message], schemas: list[dict], context_budget: int) -> bool:
-        return (self.estimate_tokens(messages) + self.estimate_tools_tokens(schemas)) > context_budget * 0.7
+    def should_compress(
+        self,
+        messages: list[Message],
+        schemas: list[dict],
+        context_budget: int,
+        turns_since_last_compression: int = 0,
+    ) -> tuple[bool, str]:
+        """Returns (should_compress, reason). reason in {"turn_count", "token_threshold", ""}."""
+        if turns_since_last_compression >= 10:
+            return (True, "turn_count")
+        if (self.estimate_tokens(messages) + self.estimate_tools_tokens(schemas)) > context_budget * 0.7:
+            return (True, "token_threshold")
+        return (False, "")
 
     async def compress(
         self,
@@ -85,11 +99,21 @@ class ContextCompressor:
         context_budget: int,
         session_state: "SessionState | None" = None,
         current_turn: int = 0,
-    ) -> list[Message]:
+        compress_reason: str = "token_threshold",
+        session_id: str | None = None,
+    ) -> list[Message] | None:
+        """Compress messages. Returns:
+        - list[Message]: the to_keep list (caller should replace session.messages with it)
+        - None: nothing to compress (skip clear+extend)
+
+        Strategy path uses _split_messages_for_compression to determine to_compress/to_keep.
+        Legacy path returns a list (always).
+        """
         # ── Strategy path (Task 4.6) ──────────────────────────────────────────
         if self._strategy is not None:
             return await self._compress_with_strategy(
-                messages, session_state=session_state, current_turn=current_turn
+                messages, session_state=session_state, current_turn=current_turn,
+                compress_reason=compress_reason, session_id=session_id,
             )
 
         # ── Legacy path (no strategy) ─────────────────────────────────────────
@@ -115,36 +139,44 @@ class ContextCompressor:
         messages: list[Message],
         session_state: "SessionState | None" = None,
         current_turn: int = 0,
-    ) -> list[Message]:
-        """Use injected CompressionStrategy to compress. Emits events as appropriate."""
-        from neoagent.v2.abc import CompressionStrategy
+        compress_reason: str = "token_threshold",
+        session_id: str | None = None,
+    ) -> list[Message] | None:
+        """Use injected CompressionStrategy to compress. Emits events as appropriate.
+
+        Returns to_keep list on success, or None if nothing to compress.
+        On circuit-break (CompressionError / orphan id), returns messages unchanged.
+        """
         from neoagent.v2.errors import CompressionError
         from neoagent.v2.schema import CompressionContext
 
-        # Build context for strategy
-        session_id = session_state._current_wm.session_id if (
-            session_state and session_state._current_wm
-        ) else (session_state.id_gen._msg_counter and "unknown") if session_state else "unknown"
-
-        # Try to get session_id from WM or fall back to "unknown"
-        if session_state and session_state._current_wm:
-            session_id = session_state._current_wm.session_id
-        else:
-            session_id = "unknown"
+        # Try to get session_id from WM, caller arg, or fall back to "unknown"
+        if session_id is None:
+            if session_state and session_state._current_wm:
+                session_id = session_state._current_wm.session_id
+            else:
+                session_id = "unknown"
 
         previous_wm: dict = {}
         if session_state and session_state._current_wm:
             from neoagent.session import _wm_to_dict
             previous_wm = _wm_to_dict(session_state._current_wm)
 
-        previous_batches: list = getattr(session_state, "batches", []) if session_state else []
+        previous_batches: list = session_state.batches if session_state else []
+
+        # ── Physical trim: keep latest 5 user turns ───────────────────────────
+        to_compress, to_keep = _split_messages_for_compression(messages, keep_recent_user_turns=5)
+
+        # If nothing to compress, skip LLM call entirely
+        if not to_compress:
+            return None
 
         ctx = CompressionContext(
             session_id=session_id,
-            messages=messages,
+            messages=to_compress,
             previous_batches=previous_batches,
             previous_wm=previous_wm,
-            trigger="token_threshold",
+            trigger=compress_reason,
         )
 
         try:
@@ -161,24 +193,9 @@ class ContextCompressor:
             return messages
 
         # ── Deterministic Executor — orphan id validation (§ 10.8) ───────────
+        # Validate against to_compress (the portion the LLM saw), not all messages.
         if delta.batch_members:
-            # Build a set of all "ids" we can extract from messages.
-            # Messages here are Message objects; we use id_gen-assigned ids if
-            # session_state tracks them. As a practical fallback, we use the
-            # batch_members' own ids to check against the session_state id_gen
-            # message counter — but the most robust check is: if we have no
-            # structured msg ids, skip orphan check (messages are plain Message
-            # objects without explicit ids in the legacy API).
-            # For the Deterministic Executor, we check if batch_member.id can
-            # be resolved. Since Message objects don't carry an explicit id
-            # field (they're bare dataclasses), we treat any batch_member id as
-            # valid UNLESS the session_state has a structured messages registry.
-            # Per task spec: "delta.batch_members 里每个 BatchMember.id 都在
-            # session_state 的 messages 里存在" — but Message has no .id field.
-            # The practical check: if the batch_member id looks like "mNNN" (our
-            # id_gen format), validate it against id_gen's counter range.
-            # If any id is clearly out of range, reject.
-            orphan_id = self._find_orphan_id(delta.batch_members, messages, session_state)
+            orphan_id = self._find_orphan_id(delta.batch_members, to_compress, session_state)
             if orphan_id is not None:
                 from neoagent.events import CompressionFailedEvent
                 if self._bus is not None:
@@ -190,11 +207,18 @@ class ContextCompressor:
                 return messages
 
         # ── Apply delta ───────────────────────────────────────────────────────
-        self._apply_delta(delta, session_state, session_id, current_turn)
+        self._apply_delta(delta, session_state, session_id, current_turn, compress_reason)
 
-        # Remove batch_members from messages (the compressed turns)
-        compressed = self._remove_batch_members(messages, delta.batch_members)
-        return compressed
+        # ── Move to_compress → compressed store (or legacy direct mutation) ────
+        if session_state is not None:
+            if self._compressed_store is not None and session_id is not None:
+                await self._compressed_store.put_many(session_id, to_compress)
+            else:
+                # Legacy fallback: direct mutation. Kept for tests that don't wire a store.
+                session_state.compressed_messages.extend(to_compress)
+            session_state.turns_since_last_compression = 0
+
+        return to_keep
 
     def _find_orphan_id(
         self,
@@ -243,6 +267,7 @@ class ContextCompressor:
         session_state: "SessionState | None",
         session_id: str,
         current_turn: int,
+        compress_reason: str = "token_threshold",
     ) -> None:
         """Write Batch + apply WM delta + emit BatchCreatedEvent."""
         from datetime import datetime, timezone
@@ -270,14 +295,12 @@ class ContextCompressor:
             time_to=now,
             summary=delta.batch_summary,
             members=list(delta.batch_members),
-            trigger="token_threshold",
+            trigger=compress_reason,
             created_at=now,
         )
 
-        # Store batch on session_state if it has a batches list
+        # Store batch on session_state (batches is now a proper SessionState field)
         if session_state is not None:
-            if not hasattr(session_state, "batches"):
-                object.__setattr__(session_state, "batches", [])
             session_state.batches.append(batch)
 
         # Emit BatchCreatedEvent
@@ -302,22 +325,6 @@ class ContextCompressor:
             wm.at_turn = current_turn
             wm.updated_by = "framework_compression"
             wm.updated_at = now
-
-    def _remove_batch_members(
-        self,
-        messages: list[Message],
-        batch_members: list,
-    ) -> list[Message]:
-        """Remove messages referenced in batch_members from the list."""
-        if not batch_members:
-            return messages
-        # Since messages are plain Message objects without explicit ids,
-        # and batch_members reference ids from id_gen (m1, m2, ...),
-        # we can't directly remove by id here. Return messages unchanged
-        # (the caller/loop handles message trimming via the legacy sanitize path).
-        # For now, strategy-based compression leaves message removal to a future
-        # per-message id tracking layer (Phase 5+).
-        return messages
 
     # ── Legacy path helpers ───────────────────────────────────────────────────
 
@@ -417,9 +424,80 @@ def _apply_wm_op(wm, op_dict: dict) -> None:
     elif field in _LIST_FIELDS:
         current: list = getattr(wm, field, [])
         if op == "set":
-            setattr(wm, field, [value])
+            # Accept either a list (replace whole) or a str (single-item list, back-compat)
+            if isinstance(value, list):
+                setattr(wm, field, list(value))
+            else:
+                setattr(wm, field, [value])
         elif op == "append":
             current.append(value)
         elif op == "remove" and item_id:
             setattr(wm, field, [item for item in current if not item.startswith(f"{item_id}:")])
     # Unknown field / op: silently skip (validated upstream by strategy)
+
+
+def _split_messages_for_compression(
+    messages: list[Message],
+    keep_recent_user_turns: int = 5,
+) -> tuple[list[Message], list[Message]]:
+    """Split messages into (to_compress, to_keep).
+
+    to_keep = messages belonging to the latest N user turns (identified by
+    distinct Message.turn values for user-role messages with turn != None).
+    to_compress = everything older than that boundary.
+
+    Edge cases:
+    - If fewer than N user turns exist total, to_compress = [], to_keep = messages.
+    - Messages with turn=None (legacy) are always kept (in to_keep, at their
+      original position via the partition boundary logic).
+    - Preserve original order in both lists.
+    """
+    if not messages:
+        return [], []
+
+    # Collect distinct user-turn values from messages that have a non-None turn.
+    # We only count user-role messages for "user-initiated turns".
+    seen_user_turns: list[int] = []
+    seen_set: set[int] = set()
+    for msg in messages:
+        if msg.role == "user" and msg.turn is not None and msg.turn not in seen_set:
+            seen_user_turns.append(msg.turn)
+            seen_set.add(msg.turn)
+
+    # Not enough user turns to compress anything
+    if len(seen_user_turns) <= keep_recent_user_turns:
+        return [], list(messages)
+
+    # The N most-recent distinct user turns to keep
+    turns_to_keep: set[int] = set(seen_user_turns[-keep_recent_user_turns:])
+
+    # Find the index of the first message that belongs to a kept user turn.
+    # Messages with turn=None are treated as belonging to "latest" (always kept).
+    split_idx = len(messages)  # default: nothing to compress
+    for i, msg in enumerate(messages):
+        if msg.turn is None:
+            # Legacy message — once we hit a None-turn we note it but keep going;
+            # they'll end up in to_keep because the split point is computed from
+            # the first "kept" user-turn message.
+            continue
+        if msg.turn in turns_to_keep:
+            # First message that belongs to a kept user turn — split here
+            split_idx = i
+            break
+
+    to_compress = list(messages[:split_idx])
+    to_keep = list(messages[split_idx:])
+
+    # Move any None-turn messages from to_compress into to_keep, preserving
+    # relative order: prepend them at the start of to_keep.
+    none_turn_from_compress = [m for m in to_compress if m.turn is None]
+    if none_turn_from_compress:
+        real_compress = [m for m in to_compress if m.turn is not None]
+        # Re-insert None-turn msgs at their original positions in the full list
+        # by simply rebuilding: to_compress = non-None-turn portion before split,
+        # to_keep = None-turn messages originally before split + rest of to_keep.
+        # We preserve overall order: none_turn_from_compress + to_keep (already ordered).
+        to_compress = real_compress
+        to_keep = none_turn_from_compress + to_keep
+
+    return to_compress, to_keep

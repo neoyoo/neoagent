@@ -55,7 +55,7 @@ class OneShotCompressionStrategy(CompressionStrategy):
 
     Degrade strategy (a):
     - Rules 1-4 violated → drop working_memory_delta (set to []),
-      retain batch_summary + batch_members, log warning, do NOT raise.
+      retain batch_members, log warning, do NOT raise.
     - JSON parse failure / top-level structure error → retry up to max_retries;
       exhausted → raise CompressionError.
     """
@@ -85,7 +85,7 @@ class OneShotCompressionStrategy(CompressionStrategy):
                 raw = await self._call_llm(prompt)
                 parsed = json.loads(raw)
                 # Validate top-level structure (required keys must exist)
-                for required_key in ("batch_summary", "batch_members", "working_memory_delta"):
+                for required_key in ("batch_members", "working_memory_delta"):
                     if required_key not in parsed:
                         raise KeyError(f"Missing top-level key: {required_key}")
                 return self._validate_and_build(parsed, context)
@@ -122,31 +122,133 @@ class OneShotCompressionStrategy(CompressionStrategy):
         # Format previous working memory
         previous_wm_text = json.dumps(ctx.previous_wm, ensure_ascii=False, indent=2)
 
-        # Format messages to compress
-        if ctx.messages:
-            msgs_lines = []
-            for msg in ctx.messages:
-                if isinstance(msg, dict):
-                    msg_id = msg.get("id", msg.get("msg_id", "?"))
-                    role = msg.get("role", "?")
-                    content = msg.get("content", "")
-                    # Truncate long content for prompt readability
-                    if isinstance(content, str) and len(content) > 200:
-                        content = content[:200] + "..."
-                    elif isinstance(content, list):
-                        content = str(content)[:200] + "..."
-                    msgs_lines.append(f"  [{msg_id}] ({role}): {content}")
-                else:
-                    msgs_lines.append(f"  {msg}")
-            messages_text = "\n".join(msgs_lines)
-        else:
-            messages_text = "  （暂无消息）"
+        # Format messages grouped by turn
+        messages_text, msg_id_range_hint = self._format_messages_by_turn(ctx.messages)
 
         return COMPRESSOR_PROMPT_TEMPLATE.format(
             previous_batches=batches_text,
             previous_wm=previous_wm_text,
             messages_to_compress=messages_text,
+            msg_id_range_hint=msg_id_range_hint,
             trigger=ctx.trigger,
+        )
+
+    def _format_messages_by_turn(
+        self, messages: list
+    ) -> tuple[str, str]:
+        """Format messages grouped by turn label and compute msg_id_range_hint.
+
+        Returns (messages_text, msg_id_range_hint).
+
+        Turn grouping:
+          - Messages with turn=None → "Turn (unknown):" group at the top
+          - Others → "Turn N:" groups in ascending turn order
+
+        Each message line: "  [msg_id] (role): content"
+        Content truncated to 200 chars.
+        """
+        if not messages:
+            return "  （暂无消息）", ""
+
+        # Collect msg_ids for range hint
+        all_msg_ids: list[str] = []
+        # Group messages by turn value
+        # turn_groups: ordered dict turn_key -> list of formatted lines
+        # turn_key: int | None (None = unknown)
+        from collections import defaultdict
+        turn_groups: dict[int | None, list[str]] = defaultdict(list)
+        turn_order: list[int | None] = []  # preserves first-seen order
+        seen_turns: set[int | None] = set()
+
+        # Also track distinct user-turn values (int only, not None) for K count
+        distinct_user_turns: set[int] = set()
+
+        for msg in messages:
+            if isinstance(msg, dict):
+                msg_id = msg.get("id") or msg.get("msg_id") or "?"
+                role = msg.get("role", "?")
+                content = msg.get("content", "")
+                turn_val = msg.get("turn")
+            else:
+                # Message dataclass/Pydantic object
+                msg_id = getattr(msg, "id", None) or "?"
+                role = getattr(msg, "role", "?")
+                content = getattr(msg, "content", "")
+                turn_val = getattr(msg, "turn", None)
+
+            if isinstance(msg_id, str) and msg_id != "?":
+                all_msg_ids.append(msg_id)
+
+            # Truncate content
+            if isinstance(content, str) and len(content) > 200:
+                content = content[:200] + "..."
+            elif isinstance(content, list):
+                content = str(content)[:200] + "..."
+
+            line = f"  [{msg_id}] ({role}): {content}"
+
+            if turn_val not in seen_turns:
+                seen_turns.add(turn_val)
+                turn_order.append(turn_val)
+            turn_groups[turn_val].append(line)
+
+            if isinstance(turn_val, int):
+                distinct_user_turns.add(turn_val)
+
+        # Build output: None-turn group first, then ascending int-turn groups
+        # Sort: None first, then int turns in ascending order
+        sorted_turns: list[int | None] = []
+        if None in turn_order:
+            sorted_turns.append(None)
+        int_turns = sorted(t for t in turn_order if t is not None)
+        sorted_turns.extend(int_turns)
+
+        blocks: list[str] = []
+        for t in sorted_turns:
+            label = "Turn (unknown):" if t is None else f"Turn {t}:"
+            blocks.append(label)
+            blocks.extend(turn_groups[t])
+
+        messages_text = "\n".join(blocks) if blocks else "  （暂无消息）"
+
+        # Compute msg_id_range_hint
+        msg_id_range_hint = self._compute_msg_id_range_hint(
+            all_msg_ids, len(messages), len(distinct_user_turns)
+        )
+
+        return messages_text, msg_id_range_hint
+
+    def _compute_msg_id_range_hint(
+        self, msg_ids: list[str], n_messages: int, k_user_turns: int
+    ) -> str:
+        """Compute the msg_id_range hint string.
+
+        Extracts numeric ids (mN format) to find first/last.
+        Falls back to first/last in list order if no numeric ids found.
+        """
+        if not msg_ids:
+            return ""
+
+        # Extract mN-format ids for numeric range
+        numeric_ids: list[int] = []
+        for mid in msg_ids:
+            if mid.startswith("m") and mid[1:].isdigit():
+                numeric_ids.append(int(mid[1:]))
+
+        if numeric_ids:
+            first_n = min(numeric_ids)
+            last_n = max(numeric_ids)
+            first_id = f"m{first_n}"
+            last_id = f"m{last_n}"
+        else:
+            first_id = msg_ids[0]
+            last_id = msg_ids[-1]
+
+        return (
+            f"Available msg_id range: {first_id}..{last_id} "
+            f"({n_messages} messages across {k_user_turns} user turns).\n"
+            "You MUST reference only msg_ids from this range in <recoverable>. "
+            "Fabricating ids will cause retrieval failures."
         )
 
     async def _call_llm(self, prompt: str) -> str:
@@ -175,17 +277,24 @@ class OneShotCompressionStrategy(CompressionStrategy):
         Rules 3/4/5 apply to working_memory_delta.
         A single violation in batch_members also triggers delta drop (hard violation).
         """
-        batch_summary_raw = parsed["batch_summary"]
+        # batch_summary: deprecated — silently ignore if present (legacy LLM output)
         batch_members_raw = parsed["batch_members"]
         wm_delta_raw = parsed["working_memory_delta"]
 
-        # Build existing msg_id set for rule 1 validation
+        # Build existing msg_id → Message mapping for rule 1 validation + turn lookup
         existing_ids: set[str] = set()
+        msg_id_to_turn: dict[str, int | None] = {}
         for msg in ctx.messages:
             if isinstance(msg, dict):
                 msg_id = msg.get("id") or msg.get("msg_id")
                 if msg_id:
                     existing_ids.add(str(msg_id))
+                    msg_id_to_turn[str(msg_id)] = msg.get("turn")
+            else:
+                msg_id = getattr(msg, "id", None)
+                if msg_id:
+                    existing_ids.add(str(msg_id))
+                    msg_id_to_turn[str(msg_id)] = getattr(msg, "turn", None)
 
         # ── Validate batch_members (rules 1 & 2) ─────────────────────────────
         batch_members: list[BatchMember] = []
@@ -212,7 +321,22 @@ class OneShotCompressionStrategy(CompressionStrategy):
                 )
                 break
 
-            batch_members.append(BatchMember(id=msg_id, role=role, preview=preview))
+            # Populate turn: use LLM output if present, else fall back to Message.turn
+            llm_turn = item.get("turn")
+            if llm_turn is not None:
+                member_turn: int | None = int(llm_turn)
+            elif msg_id in msg_id_to_turn:
+                member_turn = msg_id_to_turn[msg_id]
+            else:
+                # Orphan msg_id — graceful degradation: set turn=None, log warning
+                logger.warning(
+                    "BatchMember id '%s' not found in context for turn lookup; "
+                    "setting turn=None (graceful degradation)",
+                    msg_id,
+                )
+                member_turn = None
+
+            batch_members.append(BatchMember(id=msg_id, role=role, preview=preview, turn=member_turn))
 
         if member_violation:
             logger.warning(
@@ -220,14 +344,13 @@ class OneShotCompressionStrategy(CompressionStrategy):
                 "Reason: %s",
                 member_violation,
             )
-            # Degrade strategy (a): keep batch_summary + batch_members parsed so far,
+            # Degrade strategy (a): keep batch_members parsed so far,
             # but drop wm_delta entirely. For member violations, still include
             # the members parsed before the violation (or none if first item failed).
-            # Per spec: "保留 batch_summary + batch_members" — include what was valid.
+            # Per spec: retain batch_members — include what was valid.
             # However since the LLM output is untrusted at this point, we include
             # the fully built batch_members list (items before violation).
             return CompressionDelta(
-                batch_summary=batch_summary_raw,
                 batch_members=batch_members,  # valid members before violation
                 working_memory_delta=[],
             )
@@ -294,13 +417,11 @@ class OneShotCompressionStrategy(CompressionStrategy):
             )
             # Degrade strategy (a): drop entire working_memory_delta
             return CompressionDelta(
-                batch_summary=batch_summary_raw,
                 batch_members=batch_members,
                 working_memory_delta=[],
             )
 
         return CompressionDelta(
-            batch_summary=batch_summary_raw,
             batch_members=batch_members,
             working_memory_delta=validated_delta,
         )

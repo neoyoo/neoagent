@@ -84,26 +84,31 @@ class TestCompressionDelta:
     def test_construct_all_required_fields(self):
         from neoagent.v2.schema import CompressionDelta, BatchMember
         cd = CompressionDelta(
-            batch_summary="7-section structured text",
             batch_members=[BatchMember(id="m1", role="user", preview="user said hi")],
             working_memory_delta=[{"field": "progress", "op": "set", "value": "done"}],
         )
-        assert cd.batch_summary == "7-section structured text"
+        assert cd.batch_summary is None  # Bug #2: deprecated, defaults to None
         assert len(cd.batch_members) == 1
         assert cd.batch_members[0].id == "m1"
         assert len(cd.working_memory_delta) == 1
 
+    def test_batch_summary_optional_for_back_compat(self):
+        """Legacy code can still pass batch_summary; it's accepted but deprecated."""
+        from neoagent.v2.schema import CompressionDelta
+        cd = CompressionDelta(batch_members=[], working_memory_delta=[], batch_summary="legacy")
+        assert cd.batch_summary == "legacy"
+
     def test_batch_members_required_and_independent(self):
         from neoagent.v2.schema import CompressionDelta
-        cd1 = CompressionDelta(batch_summary="s", batch_members=[], working_memory_delta=[])
-        cd2 = CompressionDelta(batch_summary="s", batch_members=[], working_memory_delta=[])
+        cd1 = CompressionDelta(batch_members=[], working_memory_delta=[])
+        cd2 = CompressionDelta(batch_members=[], working_memory_delta=[])
         cd1.batch_members.append("x")  # type: ignore
         assert cd2.batch_members == []
 
     def test_working_memory_delta_required_and_independent(self):
         from neoagent.v2.schema import CompressionDelta
-        cd1 = CompressionDelta(batch_summary="s", batch_members=[], working_memory_delta=[])
-        cd2 = CompressionDelta(batch_summary="s", batch_members=[], working_memory_delta=[])
+        cd1 = CompressionDelta(batch_members=[], working_memory_delta=[])
+        cd2 = CompressionDelta(batch_members=[], working_memory_delta=[])
         cd1.working_memory_delta.append({"field": "x", "op": "set", "value": "y"})
         assert cd2.working_memory_delta == []
 

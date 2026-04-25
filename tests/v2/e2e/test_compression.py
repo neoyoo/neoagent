@@ -105,17 +105,24 @@ def _make_session_state(
     return state
 
 
-def _make_messages(n: int = 10) -> list[Message]:
-    """Create n alternating user/assistant messages."""
+def _make_messages(n_turns: int = 6) -> list[Message]:
+    """Create n_turns user+assistant pairs with distinct turn values.
+
+    Returns 2*n_turns messages. n_turns >= 6 ensures compression triggers
+    (keep_recent_user_turns=5; need > 5 user turns for to_compress to be non-empty).
+
+    Old callers used n as total-message-count; new callers use n_turns as pair-count.
+    We always produce at least 6 pairs to ensure the split fires.
+    """
+    effective = max(n_turns, 6)
     msgs = []
-    for i in range(n):
-        role = "user" if i % 2 == 0 else "assistant"
-        msgs.append(Message(role=role, content=f"message {i}"))
+    for turn_idx in range(effective):
+        msgs.append(Message(role="user", content=f"user message {turn_idx}", turn=turn_idx))
+        msgs.append(Message(role="assistant", content=f"assistant message {turn_idx}", turn=turn_idx))
     return msgs
 
 
 def _make_legal_delta(
-    batch_summary: str = "Compressed 5 messages",
     member_ids: list[str] | None = None,
 ) -> CompressionDelta:
     """Create a valid CompressionDelta with ids in range m1..m5."""
@@ -126,7 +133,6 @@ def _make_legal_delta(
         for mid in member_ids
     ]
     return CompressionDelta(
-        batch_summary=batch_summary,
         batch_members=members,
         working_memory_delta=[
             {"field": "progress", "op": "set", "value": "50% done"},
@@ -160,7 +166,6 @@ class TestLegalDeltaApplied:
         bus.subscribe(BatchCreatedEvent, batch_events.append)
 
         delta = _make_legal_delta(
-            batch_summary="Summarized turns 1-3",
             member_ids=["m1", "m2", "m3"],
         )
         strategy = _MockStrategy(preset_delta=delta)
@@ -181,7 +186,7 @@ class TestLegalDeltaApplied:
         assert len(state.batches) == 1
         batch = state.batches[0]
         assert isinstance(batch, Batch)
-        assert batch.summary == "Summarized turns 1-3"
+        assert batch.summary is None  # Bug #2: summary deprecated
         assert len(batch.members) == 3
 
         # WM updated by delta
@@ -192,7 +197,7 @@ class TestLegalDeltaApplied:
         # BatchCreatedEvent emitted
         assert len(batch_events) == 1
         evt = batch_events[0]
-        assert evt.summary == "Summarized turns 1-3"
+        assert evt.summary is None  # Bug #2: summary deprecated
         assert len(evt.members) == 3
 
         # No CompressionFailedEvent
@@ -216,7 +221,6 @@ class TestOrphanIdRejected:
 
         # m99 is orphaned: id_gen._msg_counter=5 → valid set {m1..m5}
         orphan_delta = CompressionDelta(
-            batch_summary="bad delta",
             batch_members=[BatchMember(id="m99", role="user", preview="orphan")],
             working_memory_delta=[],
         )
@@ -299,7 +303,6 @@ class TestBatchCreatedEventPayload:
         bus.subscribe(BatchCreatedEvent, batch_events.append)
 
         delta = CompressionDelta(
-            batch_summary="GOAL: trip\nPROGRESS: 50%",
             batch_members=[
                 BatchMember(id="m1", role="user", preview="first message"),
                 BatchMember(id="m2", role="assistant", preview="response"),
@@ -321,8 +324,8 @@ class TestBatchCreatedEventPayload:
         assert evt.batch_id
         assert evt.batch_id.startswith("cm_") or len(evt.batch_id) > 0
 
-        # Summary matches delta
-        assert evt.summary == "GOAL: trip\nPROGRESS: 50%"
+        # Summary is None (Bug #2: deprecated)
+        assert evt.summary is None
 
         # Members list contains 2 members
         assert len(evt.members) == 2
@@ -374,7 +377,6 @@ class TestNoMsgCounterSkipsOrphanCheck:
         bus.subscribe(BatchCreatedEvent, batch_events.append)
 
         delta = CompressionDelta(
-            batch_summary="batch with unknown id",
             batch_members=[BatchMember(id="m99", role="user", preview="test")],
             working_memory_delta=[],
         )
@@ -401,7 +403,6 @@ class TestWmDeltaScalarFields:
         """delta with progress=set → WM.progress updated."""
         bus = EventBus()
         delta = CompressionDelta(
-            batch_summary="s",
             batch_members=[BatchMember(id="m1", role="user", preview="p")],
             working_memory_delta=[
                 {"field": "progress", "op": "set", "value": "done"},
@@ -420,7 +421,6 @@ class TestWmDeltaScalarFields:
         """delta with next_steps=append → item added to list."""
         bus = EventBus()
         delta = CompressionDelta(
-            batch_summary="s",
             batch_members=[BatchMember(id="m1", role="user", preview="p")],
             working_memory_delta=[
                 {"field": "next_steps", "op": "append", "value": "n01: book flights"},

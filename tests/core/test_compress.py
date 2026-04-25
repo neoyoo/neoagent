@@ -55,16 +55,22 @@ class TestEstimateToolsTokens:
 class TestShouldCompress:
     def test_below_threshold(self):
         c = ContextCompressor(provider=_make_provider())
-        assert c.should_compress([_user("Hi")], [], context_budget=100_000) is False
+        should, reason = c.should_compress([_user("Hi")], [], context_budget=100_000)
+        assert should is False
+        assert reason == ""
 
     def test_above_threshold(self):
         c = ContextCompressor(provider=_make_provider())
-        assert c.should_compress([_user("word " * 500)], [], context_budget=50) is True
+        should, reason = c.should_compress([_user("word " * 500)], [], context_budget=50)
+        assert should is True
+        assert reason == "token_threshold"
 
     def test_tools_counted(self):
         c = ContextCompressor(provider=_make_provider())
         big = [{"name": f"t{i}", "description": "x" * 200, "input_schema": {}} for i in range(10)]
-        assert c.should_compress([_user("short")], big, context_budget=50) is True
+        should, reason = c.should_compress([_user("short")], big, context_budget=50)
+        assert should is True
+        assert reason == "token_threshold"
 
 class TestSanitizeToolPairs:
     def test_clean_unchanged(self):
@@ -233,7 +239,7 @@ async def test_structured_template_keywords_in_system_prompt() -> None:
     await compressor.compress(msgs, context_budget=1000)
     call_args = provider.create.call_args
     system_text = call_args.kwargs.get("system", "")
-    for keyword in ("GOAL", "PROGRESS", "DECISIONS"):
+    for keyword in ("PROGRESS", "DECISIONS"):
         assert keyword in system_text, f"Missing keyword {keyword!r} in system prompt"
 
 
