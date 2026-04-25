@@ -10,7 +10,7 @@ from neoagent.tools.deferred import DeferredToolRegistry
 from neoagent.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
-    from neoagent.session import SessionState
+    from neoagent.session import Session, SessionState
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,16 @@ _current_session_state: contextvars.ContextVar["SessionState | None"] = contextv
 def set_session_state(state: "SessionState | None") -> None:
     """Set the session state for the current execution context."""
     _current_session_state.set(state)
+
+
+_current_session: contextvars.ContextVar["Session | None"] = contextvars.ContextVar(
+    "_current_session", default=None
+)
+
+
+def set_current_session(session: "Session | None") -> None:
+    """Set the full session for the current execution context (used by free/recall tools)."""
+    _current_session.set(session)
 
 
 class ToolSearchInput(BaseModel):
