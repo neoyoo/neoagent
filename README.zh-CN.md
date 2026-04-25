@@ -116,6 +116,17 @@ v2 内部模块（neoagent/v2/）：
 ln -s /path/to/neoagent/skills/neoagent ~/.claude/skills/neoagent
 ```
 
+## 致谢
+
+本 SDK 站在大量前人工作之上：
+
+- **[Claude Code](https://claude.com/claude-code)**（Anthropic）—— 架构参照系。hooks、skills + MCP 集成、deferred tool registry、working-memory 快照，以及整体的 agent-loop 纪律，全部来自对 Claude Code 设计的研习。
+- **Andrej Karpathy** —— LLM 作为新计算界面的整体框架（"Software 3.0"、LLM-as-OS），以及 [vibe-coding 推文](https://x.com/karpathy/status/2015883857489522876) 沉淀出的 [Forrest Chang 整理的 andrej-karpathy-skills CLAUDE.md](https://github.com/forrestchang/andrej-karpathy-skills)。四条原则——*Think before coding · Simplicity first · Surgical changes · Goal-driven execution*——已直接融入我们的开发工作流，v2 工作里到处可见痕迹。
+- **[MemGPT / Letta](https://github.com/letta-ai/letta)** —— 验证了"分层 working memory + archival memory"是长会话 agent 的正确形态，是 `WorkingMemory` 与 `compressed_history` 继承的设计。
+- **更广义的 AI agent 社区**（AgentScope、DeerFlow 等）—— 在姊妹仓 [ai-knowledge](https://github.com/neoyoo/ai-knowledge) 里有完整对比记录。我们读它们是为了决定什么抄、什么换。
+
+这里没有任何"新发明"。对的部分是组合。
+
 ## 许可证
 
 MIT。见 `LICENSE`。

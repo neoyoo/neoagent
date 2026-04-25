@@ -116,6 +116,17 @@ All five extension points follow the same pattern: implement the Protocol, pass 
 ln -s /path/to/neoagent/skills/neoagent ~/.claude/skills/neoagent
 ```
 
+## Acknowledgments
+
+This SDK stands on a lot of prior art:
+
+- **[Claude Code](https://claude.com/claude-code)** (Anthropic) — the architectural reference. Hooks, skills + MCP integration, deferred tool registry, working-memory snapshots, and the overall agent-loop discipline all originate from studying Claude Code's design.
+- **Andrej Karpathy** — the framing of LLMs as a new compute surface ("Software 3.0," LLM-as-OS), and the [vibe-coding thread](https://x.com/karpathy/status/2015883857489522876) that crystallized into [Forrest Chang's andrej-karpathy-skills CLAUDE.md](https://github.com/forrestchang/andrej-karpathy-skills). The four principles — *Think before coding · Simplicity first · Surgical changes · Goal-driven execution* — were adopted directly into our development workflow; their fingerprints are visible across v2.
+- **[MemGPT / Letta](https://github.com/letta-ai/letta)** — validated the layered "working memory + archival memory" shape that `WorkingMemory` and `compressed_history` inherit.
+- **The wider AI agent community** (AgentScope, DeerFlow, and others) — catalogued comparatively in the sister [ai-knowledge](https://github.com/neoyoo/ai-knowledge) vault. We read them to decide what to borrow and where to differ.
+
+Nothing here is novel. The opinionated part is the assembly.
+
 ## License
 
 MIT. See `LICENSE`.
