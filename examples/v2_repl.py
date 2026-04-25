@@ -26,6 +26,7 @@ Env (all read from neoagent/.env):
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import os
@@ -34,6 +35,11 @@ import types
 from dataclasses import fields, is_dataclass
 from datetime import datetime
 from pathlib import Path
+
+# Always prefer the dev checkout over any pip-installed neoagent in site-packages.
+# Without this, a stale `pip install neoagent` in the active venv (no -e flag)
+# silently shadows our edits to neoagent/* under this repo.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 # ── Load neoagent/.env (project-local, never trip-os's) ──────────────────────
@@ -371,6 +377,31 @@ When discussing or writing Python code in this session:
 
 # ── main ─────────────────────────────────────────────────────────────────────
 async def main() -> None:
+    parser = argparse.ArgumentParser(description="v2 REPL — interactive chat against neoagent SDK")
+    parser.add_argument(
+        "--resume", metavar="SESSION_ID",
+        help="Resume a previous session from sessions/<SESSION_ID>.json (omit for a fresh session)",
+    )
+    parser.add_argument(
+        "--list", action="store_true",
+        help="List resumable sessions and exit",
+    )
+    args = parser.parse_args()
+
+    sessions_dir = Path(__file__).resolve().parent.parent / "sessions"
+    if args.list:
+        if not sessions_dir.exists():
+            print(f"(no sessions yet — sessions/ directory will be created on first run)")
+            return
+        files = sorted(sessions_dir.glob("*.json"))
+        if not files:
+            print(f"(sessions/ exists but empty)")
+            return
+        print(f"Resumable sessions ({len(files)}):")
+        for f in files:
+            print(f"  {f.stem}   [{datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec='seconds')}]")
+        return
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     base_url = os.environ.get("ANTHROPIC_BASE_URL")
     model = os.environ.get("ANTHROPIC_MODEL")
@@ -436,71 +467,43 @@ async def main() -> None:
         context_budget=4_500,  # aggressive: compression triggers after ~3-4 Chinese turns
         compression_strategy=compression_strategy,
         memory_review_strategy=review_strategy,
+        session_dir=sessions_dir,
     )
     agent = NeoAgent(config)
-    session = agent.new_session()
 
-    # framework_init — application layer bootstraps an empty WM.
-    # The user does not fill any of these fields; the LLM populates them
-    # as the conversation proceeds via update_working_memory, and real
-    # applications (e.g. trip-os) may seed fields based on their own onboarding.
-    session.state._current_wm = WorkingMemory(
-        session_id=session.id,
-        version=0,
-        at_turn=0,
-        constraints_and_preferences=[],
-        progress="",
-        key_decisions=[],
-        relevant_files=[],
-        next_steps=[],
-        critical_context="",
-        updated_by="framework_init",
-        updated_at=datetime.now(),
-    )
+    if args.resume:
+        session = agent.resume(args.resume)
+        resumed = True
+    else:
+        session = agent.new_session()
+        resumed = False
+
+    # framework_init — bootstrap empty WM only for brand-new sessions.
+    # Resumed sessions restore their WM from disk via JsonFileStorage.
+    if not resumed:
+        session.state._current_wm = WorkingMemory(
+            session_id=session.id,
+            version=0,
+            at_turn=0,
+            constraints_and_preferences=[],
+            progress="",
+            key_decisions=[],
+            relevant_files=[],
+            next_steps=[],
+            critical_context="",
+            updated_by="framework_init",
+            updated_at=datetime.now(),
+        )
 
     # Register tools: v2 builtins + read_file + (optional) v1 free_tool_result
     agent.register_tool(ReadFileTool(base_dir=Path.cwd()))
     agent.register_tool(UpdateWorkingMemoryTool(lambda: session.state))
-    agent.register_tool(RecallTurnTool(lambda: session))
+    agent.register_tool(RecallTurnTool(lambda: session, store=agent._compressed_store))
     try:
         from neoagent.tools.builtin.free_tool_result import FreeToolResultTool
         agent.register_tool(FreeToolResultTool())
     except ImportError:
         pass
-
-    # Render the current WorkingMemory into every system prompt build — this is
-    # how the LLM sees `critical_context` / `constraints_and_preferences` /
-    # `progress`, so the session's task anchor lives in WM rather than a static string.
-    def _render_wm_section() -> str:
-        wm = session.state._current_wm
-        if wm is None:
-            return ""
-        lines = [
-            "<working_memory>",
-            f"critical_context: {wm.critical_context or '(none)'}",
-            f"progress: {wm.progress or '(none)'}",
-        ]
-        for label, items in (
-            ("constraints_and_preferences", wm.constraints_and_preferences),
-            ("key_decisions", wm.key_decisions),
-            ("relevant_files", wm.relevant_files),
-            ("next_steps", wm.next_steps),
-        ):
-            lines.append(f"{label}:")
-            if items:
-                for it in items:
-                    lines.append(f"  - {it}")
-            else:
-                lines.append("  (none)")
-        lines.append("</working_memory>")
-        return "\n".join(lines)
-
-    agent._prompt_builder.add_section(PromptSection(
-        name="working_memory",
-        content=_render_wm_section,
-        priority=50,           # above identity (which is priority=0) so it renders after
-        is_static=False,       # re-rendered on every build
-    ))
 
     # Inject a skill into PromptBuilder (activated — visible to LLM from turn 1)
     agent._prompt_builder.register_skill(
@@ -523,13 +526,16 @@ async def main() -> None:
     bus.subscribe(CompressionFailedEvent, lambda e: logger.log_event("CompressionFailed", e))
     bus.subscribe(TurnCompleteEvent, lambda e: logger.log_event("TurnComplete", e))
 
-    print(f"\nSession  : {session.id}")
+    print(f"\nSession  : {session.id}  {'(resumed)' if resumed else '(new)'}")
     print(f"Provider : anthropic @ {base_url}")
     print(f"Model    : {model}")
     print(f"Budget   : {config.context_budget} tokens")
+    print(f"Storage  : {sessions_dir}")
     print(f"Logs     : {logger.dir}")
     print(f"Tools    : {', '.join(sorted(agent._registry.all_tools().keys()))}")
     print(f"Skill    : python_style (active)")
+    if resumed:
+        print(f"Messages : {len(session.messages)} loaded  (WM v{session.state._current_wm.version if session.state._current_wm else '?'})")
     print("Commands : /quit  /wm  /ctx  /tools")
     print(f"read_file base_dir = {Path.cwd()}\n")
 
