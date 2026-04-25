@@ -56,7 +56,7 @@ neoagent 是一个 Python AI Agent SDK，目标是提供生产级的 agent 开�
 - Phase 2（1 周）：MCP 边界穿透
 - Phase 3（选做）：HTTP channel 入口 + Prompt 版本管理 + Cost 归因
 
-**完整决策文档**：`../ai- knowledge/projects/neoagent/decisions/2026-04-22-langfuse-integration.md`
+**完整决策文档**：`../ai-knowledge/projects/neoagent/decisions/2026-04-22-langfuse-integration.md`
 
 ## 开发规范
 
