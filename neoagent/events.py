@@ -26,6 +26,12 @@ class ProviderRequestEvent(Event):
 
 
 @dataclass(frozen=True)
+class TextDeltaEvent(Event):
+    """Emitted for each text token during provider streaming calls."""
+    delta: str
+
+
+@dataclass(frozen=True)
 class ProviderResponseEvent(Event):
     content: tuple
     stop_reason: str

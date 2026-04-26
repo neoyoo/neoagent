@@ -8,6 +8,7 @@ from neoagent.events import (
     MemoryExtractEvent,
     MessageCreatedEvent, ToolResultPersistedEvent,
     ProviderRequestEvent, ProviderResponseEvent,
+    TextDeltaEvent,
     TurnCompleteEvent,
     WorkingMemoryUpdatedEvent,
     # NOTE: SkillChangeEvent is defined but not yet wired; PromptBuilder needs EventBus access (planned for future).
@@ -251,7 +252,13 @@ class QueryLoop:
                     _msgs = pre_result.modified_data.get("messages", msgs)
                     _schemas = pre_result.modified_data.get("tools", schemas)
 
-            response = await self._provider.create(system=_system, messages=list(_msgs), tools=_schemas, max_tokens=_DEFAULT_MAX_TOKENS)
+            def _on_text_delta(delta: str) -> None:
+                self._bus.emit(TextDeltaEvent(delta=delta))
+
+            response = await self._provider.create(
+                system=_system, messages=list(_msgs), tools=_schemas,
+                max_tokens=_DEFAULT_MAX_TOKENS, text_delta_callback=_on_text_delta,
+            )
             if response.stop_reason == "max_tokens":
                 response = await self._retry_with_higher_max(_system, list(_msgs), _schemas)
 

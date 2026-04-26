@@ -131,6 +131,7 @@ class OpenAIProvider(Provider):
     async def create(self, system: str, messages: list[Message], tools: list[dict], **kwargs) -> Response:
         serialized = _serialize_messages(system, messages)
         openai_tools = _convert_tools(tools) if tools else None
+        text_delta_callback = kwargs.get("text_delta_callback")
 
         create_kwargs: dict = {
             "model": self.model,
@@ -140,5 +141,59 @@ class OpenAIProvider(Provider):
         if openai_tools:
             create_kwargs["tools"] = openai_tools
 
-        raw = await self._client.chat.completions.create(**create_kwargs)
-        return _parse_response(raw)
+        if text_delta_callback is None:
+            raw = await self._client.chat.completions.create(**create_kwargs)
+            return _parse_response(raw)
+
+        # ── Streaming path ──
+        create_kwargs["stream"] = True
+        create_kwargs["stream_options"] = {"include_usage": True}
+
+        content_accum = ""
+        tool_calls_accum: dict[int, dict] = {}
+        finish_reason = "stop"
+        prompt_tokens = 0
+        completion_tokens = 0
+
+        stream = await self._client.chat.completions.create(**create_kwargs)
+        async for chunk in stream:
+            if getattr(chunk, "usage", None):
+                prompt_tokens = chunk.usage.prompt_tokens or 0
+                completion_tokens = chunk.usage.completion_tokens or 0
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            delta = choice.delta
+            if getattr(delta, "content", None):
+                content_accum += delta.content
+                text_delta_callback(delta.content)
+            if getattr(delta, "tool_calls", None):
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index
+                    entry = tool_calls_accum.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                    if tc_delta.id:
+                        entry["id"] = tc_delta.id
+                    if tc_delta.function:
+                        if tc_delta.function.name:
+                            entry["name"] += tc_delta.function.name
+                        if tc_delta.function.arguments:
+                            entry["arguments"] += tc_delta.function.arguments
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+
+        content: list[ContentBlock] = []
+        if content_accum:
+            content.append(TextBlock(text=content_accum))
+        for entry in tool_calls_accum.values():
+            try:
+                input_data = json.loads(entry["arguments"]) if entry["arguments"] else {}
+            except (json.JSONDecodeError, TypeError):
+                input_data = {}
+            content.append(ToolUseBlock(id=entry["id"], name=entry["name"], input=input_data))
+
+        return Response(
+            content=content,
+            stop_reason=_STOP_REASON_MAP.get(finish_reason, "end_turn"),
+            input_tokens=prompt_tokens,
+            output_tokens=completion_tokens,
+        )

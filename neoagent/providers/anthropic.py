@@ -45,10 +45,22 @@ class AnthropicProvider(Provider):
 
     async def create(self, system: str, messages: list[Message], tools: list[dict], **kwargs) -> Response:
         max_tokens = kwargs.get("max_tokens", self.max_tokens)
-        raw = await self._client.messages.create(
-            model=self.model, max_tokens=max_tokens,
-            system=system, messages=_serialize_messages(messages), tools=tools,
-        )
+        text_delta_callback = kwargs.get("text_delta_callback")
+
+        if text_delta_callback is not None:
+            async with self._client.messages.stream(
+                model=self.model, max_tokens=max_tokens,
+                system=system, messages=_serialize_messages(messages), tools=tools,
+            ) as stream:
+                async for text in stream.text_stream:
+                    text_delta_callback(text)
+                raw = await stream.get_final_message()
+        else:
+            raw = await self._client.messages.create(
+                model=self.model, max_tokens=max_tokens,
+                system=system, messages=_serialize_messages(messages), tools=tools,
+            )
+
         return Response(
             content=_parse_content_blocks(raw.content),
             stop_reason=raw.stop_reason,
