@@ -148,6 +148,17 @@ class NeoAgent:
         else:
             self._storage = None
 
+        # OTEL 集成（用户配了 OTLP endpoint 才挂载）
+        import os as _os
+        self._otel_sub = None
+        if _os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") and not _os.environ.get("OTEL_SDK_DISABLED"):
+            try:
+                from neoagent.integrations.otel import OtelSubscriber
+                self._otel_sub = OtelSubscriber()
+                self._otel_sub.attach(self._event_bus)
+            except ImportError:
+                pass  # opentelemetry not installed (no [otel] extra)
+
     # ── Task 7.2: NudgeCounter + MemoryReview on TurnCompleteEvent ───────────
 
     def _on_turn_complete_sync(self, event: TurnCompleteEvent) -> None:
@@ -261,6 +272,18 @@ class NeoAgent:
         If session is provided, the user message is appended to it, the loop runs,
         and (if storage is configured) the session is auto-saved afterwards.
         """
+        from opentelemetry import trace as _tr
+        _tracer = _tr.get_tracer("neoagent")
+        with _tracer.start_as_current_span("agent.chat") as _root_span:
+            _root_span.set_attribute(
+                "agent.message_preview",
+                message[:200] if isinstance(message, str) else "<non-str>",
+            )
+            if session is not None:
+                _root_span.set_attribute("session.id", session.id)
+            return await self._chat_inner(message, session)
+
+    async def _chat_inner(self, message: str, session: Session | None = None) -> str:
         _temp = session is None
         if _temp:
             session = Session.create()

@@ -103,323 +103,336 @@ class QueryLoop:
         from neoagent.tools.builtin.tool_search import set_current_session as _set_sess
         _set_sess(_session)
 
+        from opentelemetry import trace as _tr
+        _loop_tracer = _tr.get_tracer("neoagent")
+
         turns: list[Turn] = []
         # msg_turn: the session-global user turn value stamped on all Messages.
         # If user_turn is provided (from chat()), use that; else fall back to turn_idx
         # for back-compat with internal/legacy callers.
         effective_max_turns = max_turns if max_turns is not None else self.max_turns
         for turn_idx in range(effective_max_turns):
-            msg_turn = user_turn if user_turn is not None else turn_idx
-            schemas = self._registry.get_schemas()
-            turns_since = session_state.turns_since_last_compression if session_state else 0
-            should, compress_reason = self._compressor.should_compress(
-                msgs, schemas, self.context_budget,
-                turns_since_last_compression=turns_since,
-            )
-            msg_tokens = self._compressor.estimate_tokens(msgs)
-            tool_tokens = self._compressor.estimate_tools_tokens(schemas)
-            self._bus.emit(CompressCheckEvent(
-                msg_tokens=msg_tokens, tool_tokens=tool_tokens,
-                budget=self.context_budget, should_compress=should,
-                reason=compress_reason,
-            ))
-            if should:
-                old_summary = session_state.previous_summary if session_state else None
-                failures_before = session_state.compression_failures if session_state else 0
-                to_keep = await self._compressor.compress(msgs, self.context_budget, session_state=session_state, compress_reason=compress_reason, session_id=_session.id)
-                if to_keep is None:
-                    # Nothing to compress (fewer than 5 user turns in to_compress);
-                    # reset the turn counter to avoid tight-loop re-triggering.
-                    if session_state:
-                        session_state.turns_since_last_compression = 0
+            with _loop_tracer.start_as_current_span(f"turn.{turn_idx}") as _turn_span:
+                _turn_span.set_attribute("turn.index", turn_idx)
+                msg_turn = user_turn if user_turn is not None else turn_idx
+                schemas = self._registry.get_schemas()
+                turns_since = session_state.turns_since_last_compression if session_state else 0
+                should, compress_reason = self._compressor.should_compress(
+                    msgs, schemas, self.context_budget,
+                    turns_since_last_compression=turns_since,
+                )
+                msg_tokens = self._compressor.estimate_tokens(msgs)
+                tool_tokens = self._compressor.estimate_tools_tokens(schemas)
+                self._bus.emit(CompressCheckEvent(
+                    msg_tokens=msg_tokens, tool_tokens=tool_tokens,
+                    budget=self.context_budget, should_compress=should,
+                    reason=compress_reason,
+                ))
+                if should:
+                    old_summary = session_state.previous_summary if session_state else None
+                    failures_before = session_state.compression_failures if session_state else 0
+                    to_keep = await self._compressor.compress(msgs, self.context_budget, session_state=session_state, compress_reason=compress_reason, session_id=_session.id)
+                    if to_keep is None:
+                        # Nothing to compress (fewer than 5 user turns in to_compress);
+                        # reset the turn counter to avoid tight-loop re-triggering.
+                        if session_state:
+                            session_state.turns_since_last_compression = 0
+                    else:
+                        # In-place replace preserves any external references to the list
+                        _session.messages[:] = to_keep
+                        msgs = _session.messages
+                    failures_after = session_state.compression_failures if session_state else 0
+                    if failures_after > failures_before:
+                        # LLM compress failed — truncation fallback was used
+                        self._bus.emit(CompressFallbackEvent(reason="LLM compression failed; fell back to truncation"))
+                    elif session_state and session_state.previous_summary:
+                        self._bus.emit(CompressDoneEvent(
+                            summary=session_state.previous_summary,
+                            previous_summary=old_summary,
+                        ))
+
+                # Task 4.3: Inject per-turn dynamic sections via add_section (no raw string concat bypass).
+                # Sections are added before build() and removed in try/finally to prevent accumulation.
+                # priority=-100 ensures they sort after all regular sections (appear at the end).
+                _deferred_injected = False
+                _freed_injected = False
+
+                # MCP deferred loading: filter schemas + inject deferred names into system prompt.
+                # A tool managed by the deferred registry is hidden until promoted.
+                # Promotion is tracked at two levels (OR logic for visibility):
+                #   1. Session-scoped: session_state.promoted_tools (preferred, per-session isolation)
+                #   2. Global: DeferredToolRegistry.is_deferred() == False (backward compat)
+                # A tool is visible when EITHER condition indicates it has been promoted.
+                if self._deferred_registry:
+                    session_promoted = session_state.promoted_tools if session_state else set()
+
+                    def _is_hidden(tool_name: str) -> bool:
+                        if tool_name not in self._deferred_registry._all:
+                            return False  # not a managed deferred tool
+                        # Visible if promoted in this session OR promoted globally
+                        return (
+                            tool_name not in session_promoted
+                            and self._deferred_registry.is_deferred(tool_name)
+                        )
+
+                    schemas = [s for s in schemas if not _is_hidden(s["name"])]
+
+                    # Show names of all tools that are still deferred in this session
+                    deferred_names = sorted(
+                        name for name in self._deferred_registry._all
+                        if _is_hidden(name)
+                    )
+                    if deferred_names:
+                        deferred_section_content = (
+                            "<deferred-tools>\n"
+                            + "\n".join(deferred_names)
+                            + "\n</deferred-tools>"
+                        )
+                        self._prompt_builder.add_section(
+                            PromptSection(name="_deferred", content=deferred_section_content, priority=-100, is_static=False)
+                        )
+                        _deferred_injected = True
+
+                # Apply freed-tool rewriting before sending to provider (non-mutating).
+                if session_state and session_state.freed_tool_results:
+                    msgs_for_llm = _apply_freed_to_messages(
+                        msgs,
+                        session_state.freed_tool_results,
+                        session_state.recalled_this_turn,
+                    )
+                    freed_section_content = _render_freed_section(session_state.freed_tool_results)
+                    if freed_section_content:
+                        self._prompt_builder.add_section(
+                            PromptSection(name="_freed", content=freed_section_content, priority=-100, is_static=False)
+                        )
+                        _freed_injected = True
                 else:
-                    # In-place replace preserves any external references to the list
-                    _session.messages[:] = to_keep
-                    msgs = _session.messages
-                failures_after = session_state.compression_failures if session_state else 0
-                if failures_after > failures_before:
-                    # LLM compress failed — truncation fallback was used
-                    self._bus.emit(CompressFallbackEvent(reason="LLM compression failed; fell back to truncation"))
-                elif session_state and session_state.previous_summary:
-                    self._bus.emit(CompressDoneEvent(
-                        summary=session_state.previous_summary,
-                        previous_summary=old_summary,
-                    ))
+                    msgs_for_llm = msgs
 
-            # Task 4.3: Inject per-turn dynamic sections via add_section (no raw string concat bypass).
-            # Sections are added before build() and removed in try/finally to prevent accumulation.
-            # priority=-100 ensures they sort after all regular sections (appear at the end).
-            _deferred_injected = False
-            _freed_injected = False
+                try:
+                    system = self._prompt_builder.build()
+                    # B3: append ephemeral layers (WM + compressed_history + memory_context)
+                    # from LayeredPromptBuilder every turn — must be re-built each turn since
+                    # batches change on compression and WM changes frequently.
+                    if self._layered_prompt_builder is not None:
+                        _wm = session_state._current_wm if session_state else None
+                        _batches = session_state.batches if session_state else []
+                        ephemeral = self._layered_prompt_builder.build_ephemeral(
+                            wm=_wm,
+                            batches=_batches,
+                        )
+                        if ephemeral.strip():
+                            system = system + "\n\n" + ephemeral
+                finally:
+                    # Always clean up per-turn sections regardless of success/failure
+                    if _deferred_injected:
+                        self._prompt_builder.remove_section("_deferred")
+                    if _freed_injected:
+                        self._prompt_builder.remove_section("_freed")
 
-            # MCP deferred loading: filter schemas + inject deferred names into system prompt.
-            # A tool managed by the deferred registry is hidden until promoted.
-            # Promotion is tracked at two levels (OR logic for visibility):
-            #   1. Session-scoped: session_state.promoted_tools (preferred, per-session isolation)
-            #   2. Global: DeferredToolRegistry.is_deferred() == False (backward compat)
-            # A tool is visible when EITHER condition indicates it has been promoted.
-            if self._deferred_registry:
-                session_promoted = session_state.promoted_tools if session_state else set()
+                self._bus.emit(ProviderRequestEvent(
+                    system=system, messages=tuple(msgs_for_llm),
+                    tools=tuple(schemas), turn=turn_idx,
+                ))
 
-                def _is_hidden(tool_name: str) -> bool:
-                    if tool_name not in self._deferred_registry._all:
-                        return False  # not a managed deferred tool
-                    # Visible if promoted in this session OR promoted globally
-                    return (
-                        tool_name not in session_promoted
-                        and self._deferred_registry.is_deferred(tool_name)
+                # pre_provider_call hook
+                _system, _msgs, _schemas = system, msgs_for_llm, schemas
+                if self._hook_manager:
+                    from neoagent.hooks import PreProviderCallEvent
+                    pre_event = PreProviderCallEvent(
+                        system=system, messages=list(msgs), tools=list(schemas)
                     )
+                    pre_result = await self._hook_manager.run_pre("pre_provider_call", pre_event)
+                    if pre_result.action == "deny":
+                        reason = pre_result.reason or "denied by hook"
+                        denial_msg = f"[Hook denied: {reason}]"
+                        turn = Turn(
+                            response=Message(role="assistant", content=[TextBlock(text=denial_msg)]),
+                            tool_calls=[], tool_results=[], stop_reason="end_turn",
+                        )
+                        turns.append(turn)
+                        _turn_span.set_attribute("turn.stop_reason", "end_turn")
+                        _turn_span.set_attribute("turn.tool_call_count", 0)
+                        return ConversationResult(turns=turns, reason="completed")
+                    if pre_result.action == "modify" and pre_result.modified_data:
+                        _system = pre_result.modified_data.get("system", system)
+                        _msgs = pre_result.modified_data.get("messages", msgs)
+                        _schemas = pre_result.modified_data.get("tools", schemas)
 
-                schemas = [s for s in schemas if not _is_hidden(s["name"])]
+                def _on_text_delta(delta: str) -> None:
+                    self._bus.emit(TextDeltaEvent(delta=delta))
 
-                # Show names of all tools that are still deferred in this session
-                deferred_names = sorted(
-                    name for name in self._deferred_registry._all
-                    if _is_hidden(name)
+                response = await self._provider.create(
+                    system=_system, messages=list(_msgs), tools=_schemas,
+                    max_tokens=_DEFAULT_MAX_TOKENS, text_delta_callback=_on_text_delta,
                 )
-                if deferred_names:
-                    deferred_section_content = (
-                        "<deferred-tools>\n"
-                        + "\n".join(deferred_names)
-                        + "\n</deferred-tools>"
-                    )
-                    self._prompt_builder.add_section(
-                        PromptSection(name="_deferred", content=deferred_section_content, priority=-100, is_static=False)
-                    )
-                    _deferred_injected = True
+                if response.stop_reason == "max_tokens":
+                    response = await self._retry_with_higher_max(_system, list(_msgs), _schemas)
 
-            # Apply freed-tool rewriting before sending to provider (non-mutating).
-            if session_state and session_state.freed_tool_results:
-                msgs_for_llm = _apply_freed_to_messages(
-                    msgs,
-                    session_state.freed_tool_results,
-                    session_state.recalled_this_turn,
-                )
-                freed_section_content = _render_freed_section(session_state.freed_tool_results)
-                if freed_section_content:
-                    self._prompt_builder.add_section(
-                        PromptSection(name="_freed", content=freed_section_content, priority=-100, is_static=False)
+                # post_provider_call hook (after potential retry)
+                if self._hook_manager and response.stop_reason != "max_tokens":
+                    from neoagent.hooks import PostProviderCallEvent
+                    post_event = PostProviderCallEvent(
+                        response=response,
+                        input_tokens=response.input_tokens,
+                        output_tokens=response.output_tokens,
                     )
-                    _freed_injected = True
-            else:
-                msgs_for_llm = msgs
-
-            try:
-                system = self._prompt_builder.build()
-                # B3: append ephemeral layers (WM + compressed_history + memory_context)
-                # from LayeredPromptBuilder every turn — must be re-built each turn since
-                # batches change on compression and WM changes frequently.
-                if self._layered_prompt_builder is not None:
-                    _wm = session_state._current_wm if session_state else None
-                    _batches = session_state.batches if session_state else []
-                    ephemeral = self._layered_prompt_builder.build_ephemeral(
-                        wm=_wm,
-                        batches=_batches,
-                    )
-                    if ephemeral.strip():
-                        system = system + "\n\n" + ephemeral
-            finally:
-                # Always clean up per-turn sections regardless of success/failure
-                if _deferred_injected:
-                    self._prompt_builder.remove_section("_deferred")
-                if _freed_injected:
-                    self._prompt_builder.remove_section("_freed")
-
-            self._bus.emit(ProviderRequestEvent(
-                system=system, messages=tuple(msgs_for_llm),
-                tools=tuple(schemas), turn=turn_idx,
-            ))
-
-            # pre_provider_call hook
-            _system, _msgs, _schemas = system, msgs_for_llm, schemas
-            if self._hook_manager:
-                from neoagent.hooks import PreProviderCallEvent
-                pre_event = PreProviderCallEvent(
-                    system=system, messages=list(msgs), tools=list(schemas)
-                )
-                pre_result = await self._hook_manager.run_pre("pre_provider_call", pre_event)
-                if pre_result.action == "deny":
-                    reason = pre_result.reason or "denied by hook"
-                    denial_msg = f"[Hook denied: {reason}]"
+                    post_result = await self._hook_manager.run_post("post_provider_call", post_event)
+                    if post_result.action == "modify" and post_result.modified_data:
+                        response = post_result.modified_data.get("response", response)
+                if response.stop_reason == "max_tokens":
+                    # Still truncated after retry — treat as end_turn to avoid corrupt tool calls
                     turn = Turn(
-                        response=Message(role="assistant", content=[TextBlock(text=denial_msg)]),
-                        tool_calls=[], tool_results=[], stop_reason="end_turn",
+                        response=Message(role="assistant", content=response.content),
+                        tool_calls=[], tool_results=[], stop_reason="max_tokens",
                     )
                     turns.append(turn)
+                    if session_state:
+                        session_state.total_input_tokens += response.input_tokens
+                        session_state.total_output_tokens += response.output_tokens
+                    _turn_span.set_attribute("turn.stop_reason", "max_tokens")
+                    _turn_span.set_attribute("turn.tool_call_count", 0)
                     return ConversationResult(turns=turns, reason="completed")
-                if pre_result.action == "modify" and pre_result.modified_data:
-                    _system = pre_result.modified_data.get("system", system)
-                    _msgs = pre_result.modified_data.get("messages", msgs)
-                    _schemas = pre_result.modified_data.get("tools", schemas)
-
-            def _on_text_delta(delta: str) -> None:
-                self._bus.emit(TextDeltaEvent(delta=delta))
-
-            response = await self._provider.create(
-                system=_system, messages=list(_msgs), tools=_schemas,
-                max_tokens=_DEFAULT_MAX_TOKENS, text_delta_callback=_on_text_delta,
-            )
-            if response.stop_reason == "max_tokens":
-                response = await self._retry_with_higher_max(_system, list(_msgs), _schemas)
-
-            # post_provider_call hook (after potential retry)
-            if self._hook_manager and response.stop_reason != "max_tokens":
-                from neoagent.hooks import PostProviderCallEvent
-                post_event = PostProviderCallEvent(
-                    response=response,
-                    input_tokens=response.input_tokens,
-                    output_tokens=response.output_tokens,
-                )
-                post_result = await self._hook_manager.run_post("post_provider_call", post_event)
-                if post_result.action == "modify" and post_result.modified_data:
-                    response = post_result.modified_data.get("response", response)
-            if response.stop_reason == "max_tokens":
-                # Still truncated after retry — treat as end_turn to avoid corrupt tool calls
-                turn = Turn(
-                    response=Message(role="assistant", content=response.content),
-                    tool_calls=[], tool_results=[], stop_reason="max_tokens",
-                )
-                turns.append(turn)
+                self._bus.emit(ProviderResponseEvent(
+                    content=tuple(response.content), stop_reason=response.stop_reason,
+                    input_tokens=response.input_tokens, output_tokens=response.output_tokens,
+                    turn=turn_idx,
+                ))
                 if session_state:
                     session_state.total_input_tokens += response.input_tokens
                     session_state.total_output_tokens += response.output_tokens
-                return ConversationResult(turns=turns, reason="completed")
-            self._bus.emit(ProviderResponseEvent(
-                content=tuple(response.content), stop_reason=response.stop_reason,
-                input_tokens=response.input_tokens, output_tokens=response.output_tokens,
-                turn=turn_idx,
-            ))
-            if session_state:
-                session_state.total_input_tokens += response.input_tokens
-                session_state.total_output_tokens += response.output_tokens
-            tool_calls = [ToolCall(id=b.id, name=b.name, input=b.input) for b in response.tool_use_blocks]
-            if response.stop_reason == "end_turn" or not tool_calls:
-                turn = Turn(response=Message(role="assistant", content=response.content), tool_calls=[], tool_results=[], stop_reason="end_turn")
-                turns.append(turn)
-                # Task 4.5: Snapshot _current_wm + emit WorkingMemoryUpdatedEvent
-                # BEFORE TurnCompleteEvent (WM snapshot is a turn-ending side-effect).
-                # spec § 2.3a: SDK owns version/at_turn on snapshot (version aligns
-                # with session-level turn number; tool update_working_memory does not
-                # bump version — see its docstring).
-                if (
-                    self._wm_store is not None
-                    and session_state is not None
-                    and session_state._current_wm is not None
-                ):
-                    from datetime import datetime, timezone
-                    _wm = session_state._current_wm
-                    _wm.version += 1
-                    _wm.at_turn = _wm.version
-                    _wm.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
-                    await self._wm_store.save(_session.id, _wm)
-                    from neoagent.session import _wm_to_dict
-                    self._bus.emit(WorkingMemoryUpdatedEvent(
-                        session_id=_session.id,
-                        version=_wm.version,
-                        at_turn=_wm.at_turn,
-                        wm_json=_wm_to_dict(_wm),
-                        updated_by=_wm.updated_by,
+                tool_calls = [ToolCall(id=b.id, name=b.name, input=b.input) for b in response.tool_use_blocks]
+                if response.stop_reason == "end_turn" or not tool_calls:
+                    turn = Turn(response=Message(role="assistant", content=response.content), tool_calls=[], tool_results=[], stop_reason="end_turn")
+                    turns.append(turn)
+                    # Task 4.5: Snapshot _current_wm + emit WorkingMemoryUpdatedEvent
+                    # BEFORE TurnCompleteEvent (WM snapshot is a turn-ending side-effect).
+                    # spec § 2.3a: SDK owns version/at_turn on snapshot (version aligns
+                    # with session-level turn number; tool update_working_memory does not
+                    # bump version — see its docstring).
+                    if (
+                        self._wm_store is not None
+                        and session_state is not None
+                        and session_state._current_wm is not None
+                    ):
+                        from datetime import datetime, timezone
+                        _wm = session_state._current_wm
+                        _wm.version += 1
+                        _wm.at_turn = _wm.version
+                        _wm.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                        await self._wm_store.save(_session.id, _wm)
+                        from neoagent.session import _wm_to_dict
+                        self._bus.emit(WorkingMemoryUpdatedEvent(
+                            session_id=_session.id,
+                            version=_wm.version,
+                            at_turn=_wm.at_turn,
+                            wm_json=_wm_to_dict(_wm),
+                            updated_by=_wm.updated_by,
+                        ))
+                    self._bus.emit(TurnCompleteEvent(
+                        turn_index=turn_idx,
+                        stop_reason=turn.stop_reason,
+                        tool_call_count=len(turn.tool_calls),
                     ))
-                self._bus.emit(TurnCompleteEvent(
-                    turn_index=turn_idx,
-                    stop_reason=turn.stop_reason,
-                    tool_call_count=len(turn.tool_calls),
-                ))
-                if self._memory_manager:
-                    current_tokens = self._compressor.estimate_tokens(msgs)
-                    tool_calls_before = session_state.memory_tool_calls if session_state else 0
-                    token_baseline_before = session_state.memory_token_baseline if session_state else 0
-                    triggered, items_stored = await self._memory_manager.maybe_extract(
-                        msgs, current_tokens, session_state=session_state
+                    if self._memory_manager:
+                        current_tokens = self._compressor.estimate_tokens(msgs)
+                        tool_calls_before = session_state.memory_tool_calls if session_state else 0
+                        token_baseline_before = session_state.memory_token_baseline if session_state else 0
+                        triggered, items_stored = await self._memory_manager.maybe_extract(
+                            msgs, current_tokens, session_state=session_state
+                        )
+                        token_delta = max(0, current_tokens - token_baseline_before)
+                        # NOTE: filenames not populated yet — extractor returns text summaries, not file references.
+                        self._bus.emit(MemoryExtractEvent(
+                            triggered=triggered,
+                            tool_calls=tool_calls_before,
+                            token_delta=token_delta,
+                            items_stored=items_stored,
+                        ))
+                    # Task 4.4: Emit MessageCreatedEvent for assistant_reply (end_turn path)
+                    _msg_id = session_state.id_gen.next_msg_id() if session_state else None
+                    if session_state:
+                        self._bus.emit(MessageCreatedEvent(
+                            session_id=_session.id,
+                            msg_id=_msg_id,
+                            turn=msg_turn,
+                            role="assistant",
+                            source_type="assistant_reply",
+                            content=list(response.content),
+                        ))
+                    msgs.append(Message(id=_msg_id, turn=msg_turn, role="assistant", content=response.content))
+                    if session_state:
+                        session_state.recalled_this_turn.clear()
+                    _session.save_if_storage()  # per-turn auto-save (end_turn)
+                    _turn_span.set_attribute("turn.stop_reason", turn.stop_reason)
+                    _turn_span.set_attribute("turn.tool_call_count", len(turn.tool_calls))
+                    return ConversationResult(turns=turns, reason="completed")
+                if self._executor is None:
+                    raise RuntimeError(
+                        "QueryLoop has no ToolExecutor but model requested tool calls. "
+                        "Pass tool_executor= to QueryLoop."
                     )
-                    token_delta = max(0, current_tokens - token_baseline_before)
-                    # NOTE: filenames not populated yet — extractor returns text summaries, not file references.
-                    self._bus.emit(MemoryExtractEvent(
-                        triggered=triggered,
-                        tool_calls=tool_calls_before,
-                        token_delta=token_delta,
-                        items_stored=items_stored,
-                    ))
-                # Task 4.4: Emit MessageCreatedEvent for assistant_reply (end_turn path)
-                _msg_id = session_state.id_gen.next_msg_id() if session_state else None
+                results = await self._executor.execute(tool_calls)
+                if self._memory_manager:
+                    self._memory_manager.record_tool_calls(len(tool_calls), session_state=session_state)
+                _assistant_msg_id = session_state.id_gen.next_msg_id() if session_state else None
+                assistant_msg = Message(id=_assistant_msg_id, turn=msg_turn, role="assistant", content=response.content)
+                # Task 4.4: Emit MessageCreatedEvent for assistant_reply (tool_use path)
                 if session_state:
                     self._bus.emit(MessageCreatedEvent(
                         session_id=_session.id,
-                        msg_id=_msg_id,
+                        msg_id=_assistant_msg_id,
                         turn=msg_turn,
                         role="assistant",
                         source_type="assistant_reply",
                         content=list(response.content),
                     ))
-                msgs.append(Message(id=_msg_id, turn=msg_turn, role="assistant", content=response.content))
+                msgs.append(assistant_msg)
+                tool_result_blocks = [ToolResultBlock(tool_use_id=r.call_id, content=r.output, is_error=r.is_error) for r in results]
+                _tool_result_msg_id = session_state.id_gen.next_msg_id() if session_state else None
+                result_msg = Message(id=_tool_result_msg_id, turn=msg_turn, role="user", content=tool_result_blocks)
+                msgs.append(result_msg)
+                # Record tool_use_id → tool_name mapping (used by free_tool_result tool and events).
+                # Must be populated before emitting ToolResultPersistedEvent.
+                if session_state:
+                    for call in tool_calls:
+                        session_state.tool_use_to_tool_name[call.id] = call.name
+                # Task 4.4: Emit MessageCreatedEvent (tool_result) + ToolResultPersistedEvent for each result
+                if session_state:
+                    self._bus.emit(MessageCreatedEvent(
+                        session_id=_session.id,
+                        msg_id=_tool_result_msg_id,
+                        turn=msg_turn,
+                        role="user",
+                        source_type="tool_result",
+                        content=list(tool_result_blocks),
+                    ))
+                    for r in results:
+                        tool_name_for_event = session_state.tool_use_to_tool_name.get(r.call_id, r.call_id)
+                        self._bus.emit(ToolResultPersistedEvent(
+                            session_id=_session.id,
+                            tool_use_id=r.call_id,
+                            turn=msg_turn,
+                            tool_name=tool_name_for_event,
+                            output=r.output,
+                            size_bytes=len(r.output.encode("utf-8")),
+                            is_error=r.is_error,
+                        ))
+                turn = Turn(response=assistant_msg, tool_calls=tool_calls, tool_results=results, stop_reason="tool_use")
+                turns.append(turn)
+                self._bus.emit(TurnCompleteEvent(
+                    turn_index=turn_idx,
+                    stop_reason=turn.stop_reason,
+                    tool_call_count=len(turn.tool_calls),
+                ))
+                _turn_span.set_attribute("turn.stop_reason", turn.stop_reason)
+                _turn_span.set_attribute("turn.tool_call_count", len(turn.tool_calls))
+
+                # Clear recalled-this-turn so freed rewriting applies again next turn.
                 if session_state:
                     session_state.recalled_this_turn.clear()
-                _session.save_if_storage()  # per-turn auto-save (end_turn)
-                return ConversationResult(turns=turns, reason="completed")
-            if self._executor is None:
-                raise RuntimeError(
-                    "QueryLoop has no ToolExecutor but model requested tool calls. "
-                    "Pass tool_executor= to QueryLoop."
-                )
-            results = await self._executor.execute(tool_calls)
-            if self._memory_manager:
-                self._memory_manager.record_tool_calls(len(tool_calls), session_state=session_state)
-            _assistant_msg_id = session_state.id_gen.next_msg_id() if session_state else None
-            assistant_msg = Message(id=_assistant_msg_id, turn=msg_turn, role="assistant", content=response.content)
-            # Task 4.4: Emit MessageCreatedEvent for assistant_reply (tool_use path)
-            if session_state:
-                self._bus.emit(MessageCreatedEvent(
-                    session_id=_session.id,
-                    msg_id=_assistant_msg_id,
-                    turn=msg_turn,
-                    role="assistant",
-                    source_type="assistant_reply",
-                    content=list(response.content),
-                ))
-            msgs.append(assistant_msg)
-            tool_result_blocks = [ToolResultBlock(tool_use_id=r.call_id, content=r.output, is_error=r.is_error) for r in results]
-            _tool_result_msg_id = session_state.id_gen.next_msg_id() if session_state else None
-            result_msg = Message(id=_tool_result_msg_id, turn=msg_turn, role="user", content=tool_result_blocks)
-            msgs.append(result_msg)
-            # Record tool_use_id → tool_name mapping (used by free_tool_result tool and events).
-            # Must be populated before emitting ToolResultPersistedEvent.
-            if session_state:
-                for call in tool_calls:
-                    session_state.tool_use_to_tool_name[call.id] = call.name
-            # Task 4.4: Emit MessageCreatedEvent (tool_result) + ToolResultPersistedEvent for each result
-            if session_state:
-                self._bus.emit(MessageCreatedEvent(
-                    session_id=_session.id,
-                    msg_id=_tool_result_msg_id,
-                    turn=msg_turn,
-                    role="user",
-                    source_type="tool_result",
-                    content=list(tool_result_blocks),
-                ))
-                for r in results:
-                    tool_name_for_event = session_state.tool_use_to_tool_name.get(r.call_id, r.call_id)
-                    self._bus.emit(ToolResultPersistedEvent(
-                        session_id=_session.id,
-                        tool_use_id=r.call_id,
-                        turn=msg_turn,
-                        tool_name=tool_name_for_event,
-                        output=r.output,
-                        size_bytes=len(r.output.encode("utf-8")),
-                        is_error=r.is_error,
-                    ))
-            turn = Turn(response=assistant_msg, tool_calls=tool_calls, tool_results=results, stop_reason="tool_use")
-            turns.append(turn)
-            self._bus.emit(TurnCompleteEvent(
-                turn_index=turn_idx,
-                stop_reason=turn.stop_reason,
-                tool_call_count=len(turn.tool_calls),
-            ))
 
-            # Clear recalled-this-turn so freed rewriting applies again next turn.
-            if session_state:
-                session_state.recalled_this_turn.clear()
-
-            _session.save_if_storage()  # per-turn auto-save (tool_use)
+                _session.save_if_storage()  # per-turn auto-save (tool_use)
         return ConversationResult(turns=turns, reason="max_turns")
 
     async def _retry_with_higher_max(self, system, messages, tools):
